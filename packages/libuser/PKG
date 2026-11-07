@@ -1,0 +1,11 @@
+NAME=libuser
+VERSION=0.3.1
+ARCH=x86_64
+DESC="Библиотека PBKDF2/ChaCha для Yaitso"
+DEPENDS=base
+BUILD_SYSTEM=copy
+BUILD='
+mkdir -p "$STAGE/usr/lib" "$STAGE/usr/include"
+install -m 644 "$DIST_DIR/lib/libuser.a"  "$STAGE/usr/lib/libuser.a"
+install -m 644 "$DIST_DIR/lib/libuser.h"  "$STAGE/usr/include/libuser.h"
+'

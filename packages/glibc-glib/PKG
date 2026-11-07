@@ -1,0 +1,9 @@
+NAME=glibc-glib
+VERSION=2.82.2
+ARCH=x86_64
+DESC="GLib utility library (glibc)"
+DEPENDS=glibc glibc-freetype glibc-fontconfig
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=meson
+MESON_OPTS="-Dtests=false -Dinstalled_tests=false -Ddocumentation=false -Dman=false -Dgtk_doc=false"

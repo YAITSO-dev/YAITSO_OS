@@ -1,0 +1,9 @@
+NAME=glibc-wayland-client
+VERSION=1.23.0
+ARCH=x86_64
+DESC="Wayland client library (glibc)"
+DEPENDS=glibc
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=meson
+MESON_OPTS="-Ddocumentation=false -Dtests=false -Dlibraries=true -Dscanner=false"

@@ -1,0 +1,15 @@
+NAME=patchelf
+VERSION=0.18.0
+ARCH=x86_64
+DESC="ELF patching utility"
+DEPENDS=
+BUILD_SYSTEM=copy
+BUILD='
+mkdir -p "$STAGE/usr/bin"
+if [ -x "$PKG_DIR/patchelf" ]; then
+    install -m 755 "$PKG_DIR/patchelf" "$STAGE/usr/bin/patchelf"
+else
+    echo "patchelf binary missing in $PKG_DIR" >&2
+    exit 1
+fi
+'

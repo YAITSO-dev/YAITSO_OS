@@ -1,0 +1,9 @@
+NAME=glibc-pango
+VERSION=1.54.0
+ARCH=x86_64
+DESC="Text layout library (glibc)"
+DEPENDS=glibc glibc-glib glibc-freetype glibc-fontconfig
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=meson
+MESON_OPTS="-Dintrospection=disabled -Ddocumentation=false -Dbuild-testsuite=false"

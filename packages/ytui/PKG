@@ -1,0 +1,11 @@
+NAME=ytui
+VERSION=0.3.1
+ARCH=x86_64
+DESC="TUI-библиотека Yaitso OS"
+DEPENDS=base
+BUILD_SYSTEM=copy
+BUILD='
+mkdir -p "$STAGE/usr/lib" "$STAGE/usr/include"
+install -m 644 "$DIST_DIR/ytui/libytui.a"  "$STAGE/usr/lib/libytui.a"
+install -m 644 "$DIST_DIR/ytui/libytui.h"  "$STAGE/usr/include/libytui.h"
+'

@@ -1,0 +1,23 @@
+NAME=glibc-nss
+VERSION=3.101
+ARCH=x86_64
+DESC="Network Security Services (glibc)"
+DEPENDS=glibc glibc-nspr glibc-sqlite
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=custom
+BUILD='
+make -C "$SRCDIR/nss" \
+    BUILD_OPT=1 \
+    USE_64=1 \
+    NSS_USE_SYSTEM_SQLITE=1 \
+    NSS_ENABLE_WERROR=0 \
+    NS_USE_GCC=1 \
+    NSPR_INCLUDE_DIR=/usr/glibc/include/nspr \
+    NSPR_LIB_DIR=/usr/glibc/lib \
+    USE_SYSTEM_ZLIB=1
+mkdir -p "$STAGE/usr/lib" "$STAGE/usr/glibc/lib" "$STAGE/usr/glibc/include/nss"
+cp -a "$SRCDIR/dist/Release/lib/." "$STAGE/usr/glibc/lib/" 2>/dev/null || true
+cp -a "$SRCDIR/dist/public/nss/." "$STAGE/usr/glibc/include/nss/" 2>/dev/null || true
+cp -a "$SRCDIR/dist/Release/include/." "$STAGE/usr/glibc/include/nss/" 2>/dev/null || true
+'

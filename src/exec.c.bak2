@@ -1,0 +1,360 @@
+#define _GNU_SOURCE
+#include "yaitso.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <errno.h>
+
+static int split_pipes(const char *line, char ***out, int *outn)
+{
+    int cap = 8, n = 0;
+    char **arr = xmalloc(sizeof(char *) * (size_t)cap);
+    const char *p = line;
+    size_t start = 0;
+    int in_sq = 0, in_dq = 0;
+    for (size_t i = 0; line[i]; i++) {
+        char c = line[i];
+        if (in_sq) { if (c == '\'') in_sq = 0; continue; }
+        if (in_dq) {
+            if (c == '\\' && line[i+1]) { i++; continue; }
+            if (c == '"') in_dq = 0;
+            continue;
+        }
+        if (c == '\'') { in_sq = 1; continue; }
+        if (c == '"')  { in_dq = 1; continue; }
+        if (c == '\\' && line[i+1]) { i++; continue; }
+        if (c == '|') {
+            if (n >= cap) { cap *= 2; arr = xrealloc(arr, sizeof(char *) * (size_t)cap); }
+            arr[n++] = xstrndup(line + start, i - start);
+            start = i + 1;
+        }
+    }
+    if (n >= cap) { cap *= 2; arr = xrealloc(arr, sizeof(char *) * (size_t)cap); }
+    arr[n++] = xstrdup(line + start);
+    *out = arr;
+    *outn = n;
+    return 0;
+}
+
+static int run_argv(struct yaitso_ctx *c, char *const argv[],
+                    const char *infile, const char *outfile, int append,
+                    const char *errfile, int errappend, int bg,
+                    pid_t *out_pid)
+{
+    pid_t pid = fork();
+    if (pid < 0) { perror("yaitso: fork"); return -1; }
+    if (pid == 0) {
+        if (bg) setpgid(0, 0);
+        else    setpgid(0, 0);
+
+        signal(SIGINT,  SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
+        signal(SIGTTIN, SIG_DFL);
+        signal(SIGTTOU, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
+        signal(SIGCHLD, SIG_DFL);
+
+        if (bg) {
+            int devnull = open("/dev/null", O_RDONLY);
+            if (devnull >= 0) { dup2(devnull, 0); close(devnull); }
+        } else if (infile) {
+            int fd = open(infile, O_RDONLY);
+            if (fd < 0) { perror(infile); _exit(127); }
+            dup2(fd, 0); close(fd);
+        }
+
+        if (outfile) {
+            int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+            int fd = open(outfile, flags, 0644);
+            if (fd < 0) { perror(outfile); _exit(127); }
+            dup2(fd, 1); close(fd);
+        }
+
+        if (errfile) {
+            int flags = O_WRONLY | O_CREAT | (errappend ? O_APPEND : O_TRUNC);
+            int fd = open(errfile, flags, 0644);
+            if (fd < 0) { perror(errfile); _exit(127); }
+            dup2(fd, 2); close(fd);
+        }
+
+        char **envp = env_array(c);
+        execvpe(argv[0], argv, envp);
+        int e = errno;
+        fprintf(stderr, "yaitso: %s: %s\n", argv[0], strerror(e));
+        _exit(e == ENOENT ? 127 : 126);
+    }
+    setpgid(pid, pid);
+    if (out_pid) *out_pid = pid;
+    return 0;
+}
+
+int exec_pipeline(struct yaitso_ctx *c, char *const *stages, int nstages,
+                  const char *infile, const char *outfile, int append,
+                  const char *errfile, int errappend, int bg)
+{
+    if (nstages <= 0) return 0;
+    if (nstages == 1) {
+        char *clean = NULL;
+        char *in_ = NULL, *out_ = NULL, *err_ = NULL;
+        int app = 0, errapp = 0;
+        parse_redirect(stages[0], &clean, &in_, &out_, &app, &err_, &errapp);
+        const char *fin  = infile  ? infile  : in_;
+        const char *fout = outfile ? outfile : out_;
+        const char *ferr = errfile ? errfile : err_;
+        int fapp = append  ? 1 : app;
+        int feapp = errappend ? 1 : errapp;
+
+        char *expanded = expand_vars(c, clean, NULL);
+        xfree(clean);
+        char **argv = NULL;
+        int argc = 0;
+        split_words(expanded, &argv, &argc);
+        xfree(expanded);
+
+        if (argc == 0) {
+            for (int i = 0; i < argc; i++) xfree(argv[i]);
+            xfree(argv);
+            xfree(in_); xfree(out_); xfree(err_);
+            return 0;
+        }
+
+        char **final = xmalloc(sizeof(char *) * 256);
+        int fn = 0;
+        for (int i = 0; i < argc; i++) {
+            char **g = NULL;
+            int gn = 0;
+            glob_expand(argv[i], &g, &gn);
+            if (gn > 0) {
+                for (int j = 0; j < gn; j++) {
+                    if (fn < 255) final[fn++] = g[j];
+                    else xfree(g[j]);
+                }
+                xfree(g);
+            } else {
+                if (fn < 255) final[fn++] = xstrdup(argv[i]);
+            }
+            xfree(argv[i]);
+        }
+        xfree(argv);
+        final[fn] = NULL;
+
+        /* Сначала попробовать builtin (export, cd, echo, ...) */
+        if (fn > 0 && !bg) {
+            int brc = commands_run(c, fn, final);
+            if (brc == 0) {
+                int rc = c->last_status;
+                for (int i = 0; i < fn; i++) xfree(final[i]);
+                xfree(final);
+                xfree(in_); xfree(out_); xfree(err_);
+                return rc;
+            }
+        }
+
+        pid_t pid = 0;
+        run_argv(c, final, fin, fout, fapp, ferr, feapp, bg, &pid);
+
+        if (bg) {
+            int jid = jobs_add(c, pid, stages[0]);
+            printf("[%d] %d\n", jid, (int)pid);
+            for (int i = 0; i < fn; i++) xfree(final[i]);
+            xfree(final);
+            xfree(in_); xfree(out_); xfree(err_);
+            return 0;
+        }
+
+        int st = 0;
+        waitpid(pid, &st, 0);
+        int code = WIFEXITED(st) ? WEXITSTATUS(st) : 128;
+        c->last_status = code;
+
+        for (int i = 0; i < fn; i++) xfree(final[i]);
+        xfree(final);
+        xfree(in_); xfree(out_); xfree(err_);
+        return code;
+    }
+
+    int prev = -1;
+    pid_t last_pid = 0;
+    for (int i = 0; i < nstages; i++) {
+        int pipefd[2];
+        int is_last = (i == nstages - 1);
+        if (!is_last && pipe(pipefd) < 0) { perror("pipe"); return 1; }
+
+        char *clean = NULL;
+        char *in_ = NULL, *out_ = NULL, *err_ = NULL;
+        int app = 0, errapp = 0;
+        parse_redirect(stages[i], &clean, &in_, &out_, &app, &err_, &errapp);
+
+        char *expanded = expand_vars(c, clean, NULL);
+        xfree(clean);
+        char **argv = NULL;
+        int argc = 0;
+        split_words(expanded, &argv, &argc);
+        xfree(expanded);
+
+        char **final = xmalloc(sizeof(char *) * 256);
+        int fn = 0;
+        for (int j = 0; j < argc; j++) {
+            char **g = NULL;
+            int gn = 0;
+            glob_expand(argv[j], &g, &gn);
+            if (gn > 0) {
+                for (int k = 0; k < gn; k++) {
+                    if (fn < 255) final[fn++] = g[k];
+                    else xfree(g[k]);
+                }
+                xfree(g);
+            } else {
+                if (fn < 255) final[fn++] = xstrdup(argv[j]);
+            }
+            xfree(argv[j]);
+        }
+        xfree(argv);
+        final[fn] = NULL;
+
+        if (fn == 0) {
+            for (int k = 0; k < fn; k++) xfree(final[k]);
+            xfree(final);
+            xfree(in_); xfree(out_); xfree(err_);
+            if (!is_last) { close(pipefd[0]); close(pipefd[1]); }
+            continue;
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) { perror("fork"); return 1; }
+        if (pid == 0) {
+            setpgid(0, 0);
+            signal(SIGINT,  SIG_DFL);
+            signal(SIGQUIT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
+            signal(SIGTTIN, SIG_DFL);
+            signal(SIGTTOU, SIG_DFL);
+            signal(SIGTERM, SIG_DFL);
+            signal(SIGCHLD, SIG_DFL);
+
+            if (prev >= 0) { dup2(prev, 0); close(prev); }
+            else if (infile || in_) {
+                const char *f = infile ? infile : in_;
+                int fd = open(f, O_RDONLY);
+                if (fd < 0) { perror(f); _exit(127); }
+                dup2(fd, 0); close(fd);
+            }
+
+            if (!is_last) {
+                dup2(pipefd[1], 1);
+                close(pipefd[0]);
+                close(pipefd[1]);
+            } else if (outfile || out_) {
+                const char *f = outfile ? outfile : out_;
+                int fl = (append || app) ? O_APPEND : O_TRUNC;
+                int fd = open(f, O_WRONLY | O_CREAT | fl, 0644);
+                if (fd < 0) { perror(f); _exit(127); }
+                dup2(fd, 1); close(fd);
+            }
+
+            if (errfile || err_) {
+                const char *f = errfile ? errfile : err_;
+                int fl = (errappend || errapp) ? O_APPEND : O_TRUNC;
+                int fd = open(f, O_WRONLY | O_CREAT | fl, 0644);
+                if (fd < 0) { perror(f); _exit(127); }
+                dup2(fd, 2); close(fd);
+            }
+
+            char **envp = env_array(c);
+            execvpe(final[0], final, envp);
+            fprintf(stderr, "yaitso: %s: %s\n", final[0], strerror(errno));
+            _exit(127);
+        }
+        setpgid(pid, pid);
+
+        if (prev >= 0) close(prev);
+        if (!is_last) close(pipefd[1]);
+        prev = is_last ? -1 : pipefd[0];
+        last_pid = pid;
+
+        for (int k = 0; k < fn; k++) xfree(final[k]);
+        xfree(final);
+        xfree(in_); xfree(out_); xfree(err_);
+    }
+
+    int st = 0;
+    if (last_pid) waitpid(last_pid, &st, 0);
+    while (waitpid(-1, NULL, 0) > 0) {}
+
+    int code = WIFEXITED(st) ? WEXITSTATUS(st) : 128;
+    c->last_status = code;
+    return code;
+}
+
+int exec_line(struct yaitso_ctx *c, const char *line)
+{
+    if (!line) return 0;
+    char *copy = xstrdup(line);
+    int result = 0;
+
+    char *p = copy;
+    int run_next = 1;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+
+        int in_sq = 0, in_dq = 0;
+        char *seg_start = p;
+        char *seg_end = NULL;
+        int op = 0;
+        char *q = p;
+        while (*q) {
+            char ch = *q;
+            if (in_sq) { if (ch == '\'') in_sq = 0; q++; continue; }
+            if (in_dq) {
+                if (ch == '\\' && q[1]) { q += 2; continue; }
+                if (ch == '"') in_dq = 0;
+                q++; continue;
+            }
+            if (ch == '\'') { in_sq = 1; q++; continue; }
+            if (ch == '"')  { in_dq = 1; q++; continue; }
+            if (ch == '\\' && q[1]) { q += 2; continue; }
+            if (ch == ';') { seg_end = q; op = 0; break; }
+            if (ch == '&' && q[1] == '&') { seg_end = q; op = 1; break; }
+            if (ch == '|' && q[1] == '|') { seg_end = q; op = 2; break; }
+            q++;
+        }
+        if (!seg_end) { seg_end = q; op = 0; }
+
+        char saved = *seg_end;
+        *seg_end = 0;
+
+        char **stages = NULL;
+        int nstages = 0;
+        split_pipes(seg_start, &stages, &nstages);
+
+        if (run_next) {
+            result = exec_pipeline(c, stages, nstages, NULL, NULL, 0,
+                                   NULL, 0, 0);
+        }
+
+        for (int i = 0; i < nstages; i++) xfree(stages[i]);
+        xfree(stages);
+
+        *seg_end = saved;
+
+        if (op == 0) run_next = 1;
+        else if (op == 1) run_next = (result == 0);
+        else if (op == 2) run_next = (result != 0);
+
+        p = seg_end;
+        if (*p == ';') p++;
+        else if (*p == '&' && p[1] == '&') p += 2;
+        else if (*p == '|' && p[1] == '|') p += 2;
+    }
+
+    xfree(copy);
+    c->last_status = result;
+    return result;
+}

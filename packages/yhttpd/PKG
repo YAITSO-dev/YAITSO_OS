@@ -1,0 +1,10 @@
+NAME=yhttpd
+VERSION=0.3.1
+ARCH=x86_64
+DESC="HTTP-сервер Yaitso OS"
+DEPENDS=base
+BUILD_SYSTEM=copy
+BUILD='
+mkdir -p "$STAGE/usr/bin"
+install -m 755 "$DIST_DIR/yhttpd/yhttpd" "$STAGE/usr/bin/yhttpd"
+'

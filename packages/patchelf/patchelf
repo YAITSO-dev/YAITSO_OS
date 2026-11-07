@@ -1,0 +1,2 @@
+/packages/firefox/firefox/*
+!/packages/firefox/firefox/.keep

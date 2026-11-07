@@ -1,0 +1,29 @@
+NAME=firefox
+VERSION=128.4.0esr
+ARCH=x86_64
+DESC="Firefox ESR (glibc)"
+DEPENDS=glibc glibc-wayland-client glibc-xkbcommon glibc-fontconfig \
+        glibc-freetype glibc-dbus glibc-glib glibc-pango \
+        glibc-nss glibc-nspr glibc-sqlite glibc-icu patchelf
+BUILD_SYSTEM=copy
+LIBC=glibc
+BUILD='
+mkdir -p "$STAGE/opt/firefox"
+if [ -d "$PKG_DIR/firefox" ]; then
+    cp -a "$PKG_DIR/firefox/." "$STAGE/opt/firefox/"
+fi
+mkdir -p "$STAGE/usr/bin"
+cat > "$STAGE/usr/bin/firefox" <<"WRAP"
+#!/bin/sh
+export LD_LIBRARY_PATH="/usr/glibc/lib:/opt/firefox:${LD_LIBRARY_PATH}"
+export GCONV_PATH="/usr/glibc/lib/gconv"
+export MOZ_ENABLE_WAYLAND=1
+exec /opt/firefox/firefox "$@"
+WRAP
+chmod 755 "$STAGE/usr/bin/firefox"
+if [ -x "$STAGE/opt/firefox/firefox" ] && command -v patchelf >/dev/null 2>&1; then
+    patchelf --set-interpreter /usr/glibc/lib/ld-linux-x86-64.so.2 \
+             --set-rpath /usr/glibc/lib:/opt/firefox \
+             "$STAGE/opt/firefox/firefox" || true
+fi
+'

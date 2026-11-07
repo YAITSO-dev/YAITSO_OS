@@ -1,0 +1,10 @@
+NAME=login
+VERSION=0.3.1
+ARCH=x86_64
+DESC="Login Yaitso OS"
+DEPENDS=base
+BUILD_SYSTEM=copy
+BUILD='
+mkdir -p "$STAGE/sbin"
+install -m 755 "$DIST_DIR/login/getty" "$STAGE/sbin/getty"
+'

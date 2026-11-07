@@ -1,0 +1,18 @@
+NAME=base
+VERSION=0.3.1
+ARCH=x86_64
+DESC="Базовая система Yaitso OS"
+DEPENDS=
+BUILD_SYSTEM=copy
+BUILD='
+mkdir -p "$STAGE/etc"
+cat > "$STAGE/etc/os-release" <<EOF
+NAME="Yaitso OS"
+PRETTY_NAME="Yaitso OS 0.3.1"
+ID=yaitso
+VERSION="0.3.1"
+VERSION_ID="0.3.1"
+EOF
+mkdir -p "$STAGE/etc/yaitso"
+echo "text" > "$STAGE/etc/yaitso/session"
+'

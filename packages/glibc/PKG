@@ -1,0 +1,6 @@
+NAME=glibc
+VERSION=2.40
+ARCH=x86_64
+DESC="GNU C Library (compat layer for third-party apps)"
+DEPENDS=
+BUILD_SYSTEM=glibc

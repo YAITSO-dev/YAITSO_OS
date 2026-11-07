@@ -1,0 +1,10 @@
+NAME=svc
+VERSION=0.3.1
+ARCH=x86_64
+DESC="Сервис-менеджер Yaitso OS"
+DEPENDS=base
+BUILD_SYSTEM=copy
+BUILD='
+mkdir -p "$STAGE/usr/bin"
+install -m 755 "$DIST_DIR/svc/svc" "$STAGE/usr/bin/svc"
+'

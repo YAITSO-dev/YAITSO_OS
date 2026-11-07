@@ -1,0 +1,38 @@
+.TH YTERM 1 "2026" "Yaitso OS 0.3.1" "User Commands"
+.SH NAME
+yterm \- терминал Wayland для Yaitso OS
+.SH SYNOPSIS
+.B yterm
+.RB [ \-f
+.IR font ]
+.RB [ \-s
+.IR size ]
+.RB [ \-\-no\-tabs ]
+.RB [ \-\-test\-color ]
+.RB [ \-e
+.IR command
+.RI [ args ...]]
+.SH DESCRIPTION
+yterm — эмулятор терминала на libywt. Поддерживает VT100/ECMA-48,
+UTF-8, буфер истории (2000 строк), вкладки, bracketed paste, resize.
+.SH KEYS
+.TP
+.B Ctrl+Shift+T
+новая вкладка
+.TP
+.B Ctrl+Shift+W
+закрыть вкладку
+.TP
+.B Alt+1..9
+переключение вкладок
+.TP
+.B Ctrl+Shift+F
+поиск в буфере
+.TP
+.B Shift+PageUp / Shift+PageDown
+прокрутка истории
+.TP
+.B Ctrl+Shift+D
+выход
+.SH AUTHORS
+Yaitso OS project

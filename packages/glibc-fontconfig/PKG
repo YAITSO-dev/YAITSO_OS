@@ -1,0 +1,9 @@
+NAME=glibc-fontconfig
+VERSION=2.15.0
+ARCH=x86_64
+DESC="Font configuration library (glibc)"
+DEPENDS=glibc glibc-freetype
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=meson
+MESON_OPTS="-Dtests=disabled -Dtools=disabled -Ddoc=disabled"

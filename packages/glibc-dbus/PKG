@@ -1,0 +1,9 @@
+NAME=glibc-dbus
+VERSION=1.14.10
+ARCH=x86_64
+DESC="D-Bus message bus (glibc)"
+DEPENDS=glibc
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=meson
+MESON_OPTS="-Dtests=false -Dtools=false -Ddocumentation=false -Dsystem_bus_socket=/run/dbus/system_bus_socket"

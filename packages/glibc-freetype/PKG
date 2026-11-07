@@ -1,0 +1,9 @@
+NAME=glibc-freetype
+VERSION=2.13.3
+ARCH=x86_64
+DESC="Font rendering library (glibc)"
+DEPENDS=glibc
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=meson
+MESON_OPTS="-Dharfbuzz=disabled -Dbrotli=disabled -Dbzip2=disabled -Dtests=disabled -Dpng=disabled"

@@ -1,0 +1,7 @@
+name = desktop
+exec = /usr/bin/start-desktop
+restart = no
+enabled = no
+oneshot = yes
+timeout = 5
+explain = Графическая сессия (Wayland/wlroots)

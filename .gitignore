@@ -1,0 +1,6 @@
+build/
+*.tar.gz
+*.iso
+*.img
+.antigen/
+.codex/

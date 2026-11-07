@@ -1,0 +1,9 @@
+NAME=glibc-icu
+VERSION=75.1
+ARCH=x86_64
+DESC="ICU Unicode library (glibc)"
+DEPENDS=glibc
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=configure
+CONFIGURE_OPTS="--disable-static --enable-shared --disable-samples --disable-tests --disable-extras"

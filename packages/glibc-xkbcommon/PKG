@@ -1,0 +1,9 @@
+NAME=glibc-xkbcommon
+VERSION=1.7.0
+ARCH=x86_64
+DESC="Keyboard handling library (glibc)"
+DEPENDS=glibc glibc-wayland-client
+BUILD_SYSTEM=glibc-libs
+LIBC=glibc
+GLIBC_BUILD_SYSTEM=meson
+MESON_OPTS="-Denable-x11=false -Denable-wayland=true -Denable-docs=false -Denable-tests=false"
