@@ -82,6 +82,8 @@ ywt_surface_t *ywt_surface_create(ywt_ctx_t *c, int w, int h,
 
     s->wl = wl_compositor_create_surface(ywt_ctx_compositor(c));
     if (!s->wl) { free(s); return NULL; }
+    wl_surface_set_user_data(s->wl, s);
+    ywt_input_set_active(s);
 
     struct xdg_wm_base *wm = ywt_ctx_wm_base(c);
     xdg_wm_base_add_listener(wm, &wm_listener, NULL);
@@ -100,6 +102,7 @@ ywt_surface_t *ywt_surface_create(ywt_ctx_t *c, int w, int h,
 void ywt_surface_destroy(ywt_surface_t *s)
 {
     if (!s) return;
+    ywt_input_set_active(NULL);
     if (s->top)  xdg_toplevel_destroy(s->top);
     if (s->xdg)  xdg_surface_destroy(s->xdg);
     if (s->wl)   wl_surface_destroy(s->wl);

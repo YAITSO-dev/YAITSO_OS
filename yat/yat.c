@@ -31,8 +31,6 @@ struct pkg_inst {
 };
 
 static char *g_repo_url = NULL;
-static int   g_root_prefix = 0;
-static char *g_root_dir = NULL;
 
 static void mkdir_p(const char *p, mode_t m)
 {
@@ -258,18 +256,6 @@ static int copy_tree(const char *src, const char *dst)
     snprintf(to, sizeof(to), "%s/", dst);
     char *const argv[] = {"cp", "-a", from, to, NULL};
     return run_argv(argv);
-}
-
-static int run_hook(const char *stage, const char *hook_name)
-{
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/.%s", stage, hook_name);
-    if (access(path, X_OK) != 0) return 0;
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "chroot '%s' '/%s' 2>/dev/null",
-             g_root_dir ? g_root_dir : "/", hook_name);
-    (void)cmd;
-    return 0;
 }
 
 static int pkg_install_one(const char *name, const char *version, int upgrade);
@@ -533,27 +519,57 @@ static int cmd_remove(int argc, char **argv)
     return rc;
 }
 
+/* Ищет самую новую версию пакета в репозитории. */
+static int find_repo_version(const char *name, char *out, size_t n)
+{
+    DIR *d = opendir(REPO_DIR);
+    if (!d) return 0;
+    size_t nl = strlen(name);
+    int found = 0;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        const char *f = de->d_name;
+        if (strncmp(f, name, nl) != 0 || f[nl] != '-') continue;
+        size_t l = strlen(f);
+        if (l < nl + 6 || strcmp(f + l - 4, ".yat")) continue;
+        char ver[64];
+        size_t vl = l - nl - 1 - 4;
+        if (vl == 0 || vl >= sizeof(ver)) continue;
+        memcpy(ver, f + nl + 1, vl);
+        ver[vl] = 0;
+        if (!valid_token(ver, 63)) continue;
+        if (!found || strverscmp(ver, out) > 0) {
+            snprintf(out, n, "%s", ver);
+            found = 1;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
 static int cmd_upgrade(int argc, char **argv)
 {
     (void)argc; (void)argv;
     DIR *d = opendir(INSTALLED);
     if (!d) { fprintf(stderr, "yat: нет установленных пакетов\n"); return 1; }
     struct dirent *de;
+    int rc = 0;
     while ((de = readdir(d))) {
         if (de->d_name[0] == '.') continue;
-        char meta_path[512];
-        snprintf(meta_path, sizeof(meta_path), "%s/%s/META", INSTALLED, de->d_name);
+        char inst_dir[512];
+        snprintf(inst_dir, sizeof(inst_dir), "%s/%s", INSTALLED, de->d_name);
         struct pkg_meta m;
-        if (yat_meta_read(INSTALLED, &m) != 0) continue;
-        char repo_path[512];
-        snprintf(repo_path, sizeof(repo_path), "%s/%s-%s.yat",
-                 REPO_DIR, de->d_name, m.version);
-        if (access(repo_path, F_OK) != 0) {
-            pkg_install_one(de->d_name, NULL, 1);
-        }
+        if (yat_meta_read(inst_dir, &m) != 0) continue;
+
+        char latest[64];
+        if (!find_repo_version(de->d_name, latest, sizeof(latest))) continue;
+        if (strverscmp(latest, m.version) <= 0) continue;
+
+        printf(">>> обновление %s: %s -> %s\n", de->d_name, m.version, latest);
+        if (pkg_install_one(de->d_name, latest, 1) != 0) rc = 1;
     }
     closedir(d);
-    return 0;
+    return rc;
 }
 
 static int cmd_list(int argc, char **argv)
@@ -673,6 +689,7 @@ static int cmd_update(int argc, char **argv)
 
 static int cmd_verify(int argc, char **argv)
 {
+    (void)argv;
     if (argc < 1) { fprintf(stderr, "yat verify <pkg>\n"); return 1; }
     char idx_path[512];
     snprintf(idx_path, sizeof(idx_path), "%s/index.txt", REPO_DIR);
@@ -782,7 +799,7 @@ static int cmd_rollback(int argc, char **argv)
 static void usage(void)
 {
     fprintf(stderr,
-        "yat 0.3.1 — пакетный менеджер Yaitso OS\n"
+        "yat 0.3.2 — пакетный менеджер Yaitso OS\n"
         "usage: yat <command> [args]\n"
         "  install <pkg>...   — установить\n"
         "  remove <pkg>...    — удалить\n"

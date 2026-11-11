@@ -76,5 +76,8 @@ void ycomp_layer_new(struct wl_listener *l, void *data)
     ly->new_popup.notify = layer_new_popup;
     wl_signal_add(&ls->events.new_popup, &ly->new_popup);
 
-    wl_list_insert(&s->views, &ly->link);
+    /* layer-shell тоже требует configure до первого commit с буфером. */
+    layer_configure(ly);
+
+    wl_list_insert(&s->layers, &ly->link);
 }

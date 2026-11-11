@@ -113,57 +113,88 @@ int builtin_echo(struct yaitso_ctx *c, int argc, char **argv)
     return 0;
 }
 
+/* Выводит один backslash-escape (p указывает на символ после '\\'). */
+static const char *printf_escape(const char *p)
+{
+    switch (*p) {
+    case 'n': putchar('\n'); return p;
+    case 't': putchar('\t'); return p;
+    case 'r': putchar('\r'); return p;
+    case '\\': putchar('\\'); return p;
+    case 'a': putchar('\a'); return p;
+    case 'b': putchar('\b'); return p;
+    case 'f': putchar('\f'); return p;
+    case 'v': putchar('\v'); return p;
+    case '0': {
+        int v = 0, cnt = 0;
+        while (cnt < 3 && p[1] >= '0' && p[1] <= '7') {
+            p++; v = v * 8 + (*p - '0'); cnt++;
+        }
+        putchar(v);
+        return p;
+    }
+    case 0: return p - 1;
+    default: putchar('\\'); putchar(*p); return p;
+    }
+}
+
 int builtin_printf(struct yaitso_ctx *c, int argc, char **argv)
 {
     (void)c;
     if (argc < 2) { fprintf(stderr, "printf: нужен формат\n"); return 1; }
     const char *fmt = argv[1];
     int argi = 2;
-    for (const char *p = fmt; *p; p++) {
-        if (*p != '%') { putchar(*p); continue; }
-        p++;
-        if (*p == '%') { putchar('%'); continue; }
-        int width = 0;
-        int zero = 0;
-        if (*p == '0') { zero = 1; p++; }
-        while (*p >= '0' && *p <= '9') { width = width * 10 + (*p - '0'); p++; }
-        char spec = *p;
-        const char *arg = (argi < argc) ? argv[argi++] : "";
-        switch (spec) {
-        case 's': printf("%*s", width, arg); break;
-        case 'd': case 'i': {
-            long v = strtol(arg, NULL, 10);
-            if (zero) printf("%0*ld", width, v);
-            else printf("%*ld", width, v);
-            break;
+
+    /* POSIX: формат повторяется, пока есть аргументы. */
+    int again = 1;
+    while (again) {
+        int consumed = 0;
+        for (const char *p = fmt; *p; p++) {
+            if (*p == '\\') { p = printf_escape(p + 1); continue; }
+            if (*p != '%') { putchar(*p); continue; }
+            p++;
+            if (*p == '%') { putchar('%'); continue; }
+            int width = 0;
+            int zero = 0;
+            if (*p == '0') { zero = 1; p++; }
+            while (*p >= '0' && *p <= '9') { width = width * 10 + (*p - '0'); p++; }
+            char spec = *p;
+            const char *arg = (argi < argc) ? argv[argi++] : "";
+            consumed = 1;
+            switch (spec) {
+            case 's': printf("%*s", width, arg); break;
+            case 'd': case 'i': {
+                long v = strtol(arg, NULL, 10);
+                if (zero) printf("%0*ld", width, v);
+                else printf("%*ld", width, v);
+                break;
+            }
+            case 'u': {
+                unsigned long v = strtoul(arg, NULL, 10);
+                printf("%*lu", width, v);
+                break;
+            }
+            case 'x': {
+                unsigned long v = strtoul(arg, NULL, 16);
+                printf("%*lx", width, v);
+                break;
+            }
+            case 'X': {
+                unsigned long v = strtoul(arg, NULL, 16);
+                printf("%*lX", width, v);
+                break;
+            }
+            case 'o': {
+                unsigned long v = strtoul(arg, NULL, 8);
+                printf("%*lo", width, v);
+                break;
+            }
+            case 'c': if (arg[0]) putchar(arg[0]); break;
+            case 0: p--; break;
+            default: putchar('%'); putchar(spec); break;
+            }
         }
-        case 'u': {
-            unsigned long v = strtoul(arg, NULL, 10);
-            printf("%*lu", width, v);
-            break;
-        }
-        case 'x': {
-            unsigned long v = strtoul(arg, NULL, 16);
-            printf("%*lx", width, v);
-            break;
-        }
-        case 'X': {
-            unsigned long v = strtoul(arg, NULL, 16);
-            printf("%*lX", width, v);
-            break;
-        }
-        case 'o': {
-            unsigned long v = strtoul(arg, NULL, 8);
-            printf("%*lo", width, v);
-            break;
-        }
-        case 'c': if (arg[0]) putchar(arg[0]); break;
-        case 'n': putchar('\n'); break;
-        case 't': putchar('\t'); break;
-        case '\\': putchar('\\'); break;
-        case 0: p--; break;
-        default: putchar('%'); putchar(spec); break;
-        }
+        again = (consumed && argi < argc);
     }
     fflush(stdout);
     return 0;
@@ -619,12 +650,16 @@ int builtin_tail(struct yaitso_ctx *c, int argc, char **argv)
         n = atoi(argv[i + 1]);
         i += 2;
     }
+    if (n <= 0) {
+        /* tail -n 0 (и отрицательные значения) — пустой вывод. */
+        return 0;
+    }
     FILE *f = stdin;
     if (i < argc && strcmp(argv[i], "-")) {
         f = fopen(argv[i], "r");
         if (!f) { perror(argv[i]); return 1; }
     }
-    char **ring = xmalloc(sizeof(char *) * (size_t)(n > 0 ? n : 1));
+    char **ring = xmalloc(sizeof(char *) * (size_t)n);
     for (int k = 0; k < n; k++) ring[k] = NULL;
     int cnt = 0;
     char line[8192];
@@ -674,9 +709,17 @@ int builtin_wc(struct yaitso_ctx *c, int argc, char **argv)
         if (isspace(ch)) in_word = 0;
         else if (!in_word) { in_word = 1; words++; }
     }
-    if (want_l) printf("%8ld", lines);
-    if (want_w) printf("%8ld", words);
-    if (want_c) printf("%8ld", bytes);
+    int nsel = want_l + want_w + want_c;
+    /* Как GNU wc: одно поле — без выравнивания, несколько — шириной 7. */
+    if (nsel == 1) {
+        if (want_l) printf("%ld", lines);
+        else if (want_w) printf("%ld", words);
+        else printf("%ld", bytes);
+    } else {
+        if (want_l) printf("%7ld", lines);
+        if (want_w) printf("%7ld", words);
+        if (want_c) printf("%7ld", bytes);
+    }
     putchar('\n');
     if (f != stdin) fclose(f);
     return 0;

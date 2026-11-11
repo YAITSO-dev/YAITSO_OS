@@ -193,7 +193,7 @@ static int cmd_status(int argc, char **argv)
 static void usage(void)
 {
     fprintf(stderr,
-        "ywifi 0.3.1 — WiFi-менеджер Yaitso OS\n"
+        "ywifi 0.3.2 — WiFi-менеджер Yaitso OS\n"
         "  ywifi scan                 — поиск сетей\n"
         "  ywifi list                 — сохранённые профили\n"
         "  ywifi connect <ssid> [pwd] — подключиться\n"

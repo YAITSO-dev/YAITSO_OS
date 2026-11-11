@@ -9,6 +9,7 @@
 #include <sys/ioctl.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <poll.h>
 
 static struct termios g_saved;
 static int            g_raw = 0;
@@ -59,7 +60,9 @@ void ytui_gotoxy(int x, int y)
 
 void ytui_set_color(int fg, int bg, int bold)
 {
-    printf("\033[%d;%d%sm", bold ? 1 : 0, fg, bg ? ";40" : "");
+    /* bg задаётся кодом цвета текста (30..37) и превращается в 40..47. */
+    if (bg) printf("\033[%d;%d;%dm", bold ? 1 : 0, fg, bg + 10);
+    else    printf("\033[%d;%dm", bold ? 1 : 0, fg);
 }
 
 void ytui_reset_color(void) { fputs("\033[0m", stdout); }
@@ -123,13 +126,19 @@ int ytui_read_key(void)
     if (read(STDIN_FILENO, &c, 1) != 1) return YTUI_KEY_NONE;
 
     if (c == 0x1b) {
-        unsigned char seq[2];
-        if (read(STDIN_FILENO, seq, 2) != 2) return YTUI_KEY_ESC;
-        if (seq[0] == '[') {
-            if (seq[1] == 'A') return YTUI_KEY_UP;
-            if (seq[1] == 'B') return YTUI_KEY_DOWN;
-            if (seq[1] == 'C') return YTUI_KEY_RIGHT;
-            if (seq[1] == 'D') return YTUI_KEY_LEFT;
+        /* Не блокируемся навсегда, если ESC нажат отдельно. */
+        struct pollfd pf = { STDIN_FILENO, POLLIN, 0 };
+        if (poll(&pf, 1, 50) <= 0) return YTUI_KEY_ESC;
+        unsigned char seq0;
+        if (read(STDIN_FILENO, &seq0, 1) != 1) return YTUI_KEY_ESC;
+        if (seq0 == '[') {
+            if (poll(&pf, 1, 50) <= 0) return YTUI_KEY_ESC;
+            unsigned char seq1;
+            if (read(STDIN_FILENO, &seq1, 1) != 1) return YTUI_KEY_ESC;
+            if (seq1 == 'A') return YTUI_KEY_UP;
+            if (seq1 == 'B') return YTUI_KEY_DOWN;
+            if (seq1 == 'C') return YTUI_KEY_RIGHT;
+            if (seq1 == 'D') return YTUI_KEY_LEFT;
         }
         return YTUI_KEY_ESC;
     }

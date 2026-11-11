@@ -1,6 +1,7 @@
 #include "ycomp.h"
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <time.h>
 #include <stdio.h>
@@ -68,4 +69,8 @@ void ycomp_output_new(struct wl_listener *l, void *data)
     wl_signal_add(&wlr_output->events.destroy, &o->destroy);
 
     wl_list_insert(&s->outputs, &o->link);
+
+    /* Разбудить первый frame: без этого на DRM нет page-flip события,
+     * и output_frame никогда не будет вызван. */
+    wlr_output_schedule_frame(wlr_output);
 }

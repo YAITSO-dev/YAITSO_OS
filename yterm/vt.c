@@ -328,6 +328,25 @@ void yt_term_feed(struct yt_term *t, const char *buf, size_t n)
 
         switch (t->state) {
         case ST_GROUND:
+            /* Продолжение многобайтовой UTF-8 последовательности. */
+            if (t->utf8_need > 0) {
+                if ((c & 0xc0) != 0x80) {
+                    /* Битый хвост: отбрасываем накопленное и
+                     * обрабатываем текущий байт заново. */
+                    t->utf8_need = 0;
+                    t->utf8_have = 0;
+                    continue;
+                }
+                t->utf8_cp = (t->utf8_cp << 6) | (uint32_t)(c & 0x3f);
+                t->utf8_have++;
+                i++;
+                if (t->utf8_have >= t->utf8_need) {
+                    put_char(t, t->utf8_cp);
+                    t->utf8_need = 0;
+                    t->utf8_have = 0;
+                }
+                continue;
+            }
             if (c == 0x1b) { t->state = ST_ESC; i++; continue; }
             if (c == '\r') { t->cx = 0; i++; continue; }
             if (c == '\n') {
@@ -349,24 +368,32 @@ void yt_term_feed(struct yt_term *t, const char *buf, size_t n)
             if (c == 0x07) { t->bell = 1; i++; continue; }
             if (c < 0x20) { i++; continue; }
 
+            if (c < 0x80) {
+                put_char(t, c);
+                i++;
+                continue;
+            }
             {
-                uint32_t cp = c;
-                int extra = 0;
-                if (c >= 0xf0) { cp = c & 0x07; extra = 3; }
-                else if (c >= 0xe0) { cp = c & 0x0f; extra = 2; }
-                else if (c >= 0xc0) { cp = c & 0x1f; extra = 1; }
-                for (int k = 0; k < extra && i + 1 < n; k++) {
-                    i++;
-                    cp = (cp << 6) | (buf[i] & 0x3f);
-                }
-                put_char(t, cp);
+                uint32_t cp;
+                int need;
+                if (c >= 0xc2 && c <= 0xdf)      { cp = c & 0x1f; need = 1; }
+                else if (c >= 0xe0 && c <= 0xef) { cp = c & 0x0f; need = 2; }
+                else if (c >= 0xf0 && c <= 0xf4) { cp = c & 0x07; need = 3; }
+                else { i++; continue; } /* невалидный ведущий байт */
+
+                t->utf8_cp = cp;
+                t->utf8_need = need;
+                t->utf8_have = 0;
+                /* Хвост может прийти в следующем feed(). */
                 i++;
             }
             continue;
 
         case ST_ESC:
             if (c == '[') { t->state = ST_CSI_ENTRY; t->csi_nargs = 0;
-                            t->csi_cur = 0; t->csi_priv = 0; i++; continue; }
+                            t->csi_cur = 0; t->csi_priv = 0;
+                            memset(t->csi_args, 0, sizeof(t->csi_args));
+                            i++; continue; }
             if (c == ']') { t->state = ST_OSC; t->osc_len = 0; i++; continue; }
             if (c == 'P' || c == '^' || c == '_') { t->state = ST_GROUND; i++; continue; }
             esc_dispatch(t, (char)c);
@@ -384,7 +411,10 @@ void yt_term_feed(struct yt_term *t, const char *buf, size_t n)
             /* fallthrough */
         case ST_CSI_PARAM:
             if (c >= '0' && c <= '9') {
-                if (t->csi_nargs == 0) t->csi_nargs = 1;
+                if (t->csi_nargs == 0) {
+                    t->csi_nargs = 1;
+                    t->csi_args[0] = 0;
+                }
                 if (t->csi_nargs > 0 && t->csi_nargs <= 16) {
                     t->csi_args[t->csi_nargs - 1] =
                         t->csi_args[t->csi_nargs - 1] * 10 + (c - '0');

@@ -1,5 +1,5 @@
 NAME=base
-VERSION=0.3.1
+VERSION=0.3.2
 ARCH=x86_64
 DESC="Базовая система Yaitso OS"
 DEPENDS=
@@ -8,10 +8,10 @@ BUILD='
 mkdir -p "$STAGE/etc"
 cat > "$STAGE/etc/os-release" <<EOF
 NAME="Yaitso OS"
-PRETTY_NAME="Yaitso OS 0.3.1"
+PRETTY_NAME="Yaitso OS 0.3.2"
 ID=yaitso
-VERSION="0.3.1"
-VERSION_ID="0.3.1"
+VERSION="0.3.2"
+VERSION_ID="0.3.2"
 EOF
 mkdir -p "$STAGE/etc/yaitso"
 echo "text" > "$STAGE/etc/yaitso/session"

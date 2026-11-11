@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <poll.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
@@ -137,7 +138,7 @@ static int build_request(char *buf, size_t n, const char *method,
     int r = snprintf(buf, n,
         "%s %s HTTP/1.1\r\n"
         "Host: %s\r\n"
-        "User-Agent: yat/0.3.1\r\n"
+        "User-Agent: yat/0.3.2\r\n"
         "Accept: */*\r\n"
         "Connection: close\r\n"
         "\r\n",
@@ -145,20 +146,29 @@ static int build_request(char *buf, size_t n, const char *method,
     return (r > 0 && (size_t)r < n) ? 0 : -1;
 }
 
+/* Ждёт готовности fd, не позволяя вызывающему крутиться в busy-loop. */
+static int wait_fd(int fd, short events, int timeout_ms)
+{
+    struct pollfd p = { fd, events, 0 };
+    int r;
+    do { r = poll(&p, 1, timeout_ms); } while (r < 0 && errno == EINTR);
+    if (r <= 0) return -1;             /* таймаут или ошибка */
+    if (p.revents & (POLLERR | POLLNVAL)) return -1;
+    return 0;
+}
+
 static ssize_t my_read(struct http_conn *c, void *buf, size_t n)
 {
     if (c->ssl) return tls_read(c->ssl, buf, n);
-    ssize_t r = read(c->sock, buf, n);
-    if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return -2;
-    return r;
+    if (wait_fd(c->sock, POLLIN, 30000) != 0) return -1;
+    return read(c->sock, buf, n);
 }
 
 static ssize_t my_write(struct http_conn *c, const void *buf, size_t n)
 {
     if (c->ssl) return tls_write(c->ssl, buf, n);
-    ssize_t r = write(c->sock, buf, n);
-    if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return -2;
-    return r;
+    if (wait_fd(c->sock, POLLOUT, 30000) != 0) return -1;
+    return write(c->sock, buf, n);
 }
 
 static int read_headers(struct http_conn *c, char *buf, size_t cap, size_t *got)

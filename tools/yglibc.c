@@ -93,6 +93,27 @@ static int cmd_patch(int argc, char **argv)
     return 0;
 }
 
+/* Ищет подстроку в файле целиком, а не только в первых 4 КиБ. */
+static int file_contains(const char *path, const char *needle)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t nl = strlen(needle);
+    char buf[8192 + 64];
+    size_t keep = 0;
+    int found = 0;
+    for (;;) {
+        size_t r = fread(buf + keep, 1, sizeof(buf) - keep, f);
+        size_t total = keep + r;
+        if (total >= nl && memmem(buf, total, needle, nl)) { found = 1; break; }
+        if (r == 0) break;
+        keep = total < nl - 1 ? total : nl - 1;
+        memmove(buf, buf + total - keep, keep);
+    }
+    fclose(f);
+    return found;
+}
+
 static int cmd_verify(int argc, char **argv)
 {
     if (argc < 1) {
@@ -103,15 +124,8 @@ static int cmd_verify(int argc, char **argv)
     if (!file_exists(bin)) { printf("%s: нет файла\n", bin); return 1; }
     if (!is_elf(bin))      { printf("%s: не ELF\n", bin);  return 1; }
 
-    FILE *f = fopen(bin, "rb");
-    if (!f) return 1;
-    char buf[4096];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = 0;
-
-    int has_glibc = strstr(buf, GLIBC_LD) != NULL ||
-                    strstr(buf, "libc.so.6") != NULL;
+    int has_glibc = file_contains(bin, GLIBC_LD) ||
+                    file_contains(bin, "libc.so.6");
     printf("%s: %s\n", bin, has_glibc ? "glibc-compatible" : "other libc");
     return 0;
 }

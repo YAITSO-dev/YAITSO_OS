@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include <sys/wait.h>
 
 static struct yt_session g_sess;
 static ywt_surface_t  *g_surf = NULL;
@@ -44,17 +45,28 @@ static void key_to_input(xkb_keysym_t sym, uint32_t mods,
     else if (sym == XKB_KEY_Home)  { memcpy(buf, "\033[H", 3); n = 3; }
     else if (sym == XKB_KEY_End)   { memcpy(buf, "\033[F", 3); n = 3; }
     else if (sym == XKB_KEY_Delete){ memcpy(buf, "\033[3~", 4); n = 4; }
-    else if (utf8 && utf8[0]) {
+    else if ((mods & YWT_MOD_CTRL) && utf8 && utf8[1] == 0) {
+        /* Ctrl+буква → управляющий код (0x01..0x1a). */
+        unsigned char ch = (unsigned char)utf8[0];
+        if (ch >= 'a' && ch <= 'z') { buf[0] = (char)(ch - 'a' + 1); n = 1; }
+        else if (ch >= 'A' && ch <= 'Z') { buf[0] = (char)(ch - 'A' + 1); n = 1; }
+        else if (ch == '[') { buf[0] = 0x1b; n = 1; }
+        else if (ch == '\\') { buf[0] = 0x1c; n = 1; }
+        else if (ch == ']') { buf[0] = 0x1d; n = 1; }
+        else if (ch == ' ') { buf[0] = 0; n = 1; }
+    }
+    if (n == 0 && utf8 && utf8[0]) {
         size_t l = strlen(utf8);
         if (l >= sizeof(buf)) l = sizeof(buf) - 1;
         memcpy(buf, utf8, l);
         n = (int)l;
-    } else {
-        return;
     }
+    if (n == 0) return;
 
-    if (t->master_fd >= 0 && n > 0) write(t->master_fd, buf, (size_t)n);
-    (void)mods;
+    if (t->master_fd >= 0) {
+        ssize_t wr = write(t->master_fd, buf, (size_t)n);
+        (void)wr;
+    }
 }
 
 static void on_key(void *data, xkb_keysym_t sym, uint32_t keycode,
@@ -238,7 +250,12 @@ int main(int argc, char **argv)
     char *child_argv[16];
     int cn = 0;
     const char *shell = getenv("SHELL");
-    if (!shell) shell = "/usr/local/bin/yaitso";
+    /* В live-системе SHELL может указывать на /usr/local/bin/yaitso,
+     * которого там нет. Проверяем путь и откатываемся на /bin/sh. */
+    if (!shell || access(shell, X_OK) != 0) {
+        if (access("/bin/sh", X_OK) == 0) shell = "/bin/sh";
+        else shell = "/usr/bin/yaitso";
+    }
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-f") && i + 1 < argc) font_path = argv[++i];
@@ -310,6 +327,9 @@ int main(int argc, char **argv)
     int wl_fd = ywt_ctx_fd(ctx);
 
     while (!g_closing) {
+        /* Подбираем завершившиеся shell-процессы, чтобы не копить зомби. */
+        { int st; while (waitpid(-1, &st, WNOHANG) > 0) { } }
+
         ywt_ctx_dispatch_pending(ctx);
         ywt_ctx_flush(ctx);
 

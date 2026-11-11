@@ -4,6 +4,8 @@
 #include <wlr/render/allocator.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -14,11 +16,14 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int ycomp_server_init(struct ycomp_server *s)
 {
-    wlr_log_init(WLR_INFO, NULL);
+    const char *log_level = getenv("WLR_LOG");
+    wlr_log_init(log_level && !strcmp(log_level, "debug") ? WLR_DEBUG : WLR_INFO,
+                 NULL);
 
     s->display = wl_display_create();
     if (!s->display) return -1;
@@ -38,6 +43,12 @@ int ycomp_server_init(struct ycomp_server *s)
     s->output_layout = wlr_output_layout_create(s->display);
     s->scene_layout = wlr_scene_attach_output_layout(s->scene, s->output_layout);
 
+    /* Без wl_compositor клиенты не могут создать wl_surface — ybar/yterm
+     * получают "no display" и рабочий стол остаётся чёрным. */
+    if (!wlr_compositor_create(s->display, 6, s->renderer)) return -1;
+    wlr_subcompositor_create(s->display);
+    wlr_data_device_manager_create(s->display);
+
     s->xdg_shell = wlr_xdg_shell_create(s->display, 3);
     s->layer_shell = wlr_layer_shell_v1_create(s->display, 4);
     s->deco_manager = wlr_xdg_decoration_manager_v1_create(s->display);
@@ -46,11 +57,13 @@ int ycomp_server_init(struct ycomp_server *s)
     wlr_cursor_attach_output_layout(s->cursor, s->output_layout);
     s->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
     wlr_xcursor_manager_load(s->cursor_mgr, 1);
+    wlr_cursor_set_xcursor(s->cursor, s->cursor_mgr, "default");
 
     s->seat = wlr_seat_create(s->display, "seat0");
 
     wl_list_init(&s->outputs);
     wl_list_init(&s->views);
+    wl_list_init(&s->layers);
 
     s->new_output.notify = ycomp_output_new;
     wl_signal_add(&s->backend->events.new_output, &s->new_output);

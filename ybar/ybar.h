@@ -18,7 +18,7 @@ struct ybar_state {
 };
 
 void ybar_widgets_update(struct ybar_state *s);
-int  ybar_ipc_list(char wins[][96], int max);
+int  ybar_ipc_list(char wins[][96], int max, int *focus_id);
 int  ybar_ipc_send(const char *cmd, char *reply, size_t rn);
 
 #endif

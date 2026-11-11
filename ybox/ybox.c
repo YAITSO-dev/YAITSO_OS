@@ -12,8 +12,9 @@
 #include <limits.h>
 #include <utime.h>
 #include <sys/reboot.h>
-
-static const char *prog = "ybox";
+#include <pwd.h>
+#include <grp.h>
+#include <sys/wait.h>
 
 static int cmd_true(int argc, char **argv)  { (void)argc; (void)argv; return 0; }
 static int cmd_false(int argc, char **argv) { (void)argc; (void)argv; return 1; }
@@ -137,6 +138,74 @@ static int cmd_rm(int argc, char **argv)
     return rc;
 }
 
+static int copy_file(const char *src, const char *dst, mode_t mode)
+{
+    int in = open(src, O_RDONLY);
+    if (in < 0) { perror(src); return 1; }
+    int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, mode & 07777);
+    if (out < 0) { perror(dst); close(in); return 1; }
+    char buf[65536];
+    ssize_t r;
+    int rc = 0;
+    while ((r = read(in, buf, sizeof(buf))) > 0) {
+        ssize_t off = 0;
+        while (off < r) {
+            ssize_t w = write(out, buf + off, (size_t)(r - off));
+            if (w <= 0) { perror(dst); rc = 1; goto done; }
+            off += w;
+        }
+    }
+    if (r < 0) { perror(src); rc = 1; }
+done:
+    if (close(out) != 0 && rc == 0) { perror(dst); rc = 1; }
+    close(in);
+    return rc;
+}
+
+static int copy_path(const char *src, const char *dst, int recursive)
+{
+    struct stat st;
+    if (lstat(src, &st) != 0) { perror(src); return 1; }
+
+    if (S_ISLNK(st.st_mode)) {
+        char target[PATH_MAX];
+        ssize_t n = readlink(src, target, sizeof(target) - 1);
+        if (n < 0) { perror(src); return 1; }
+        target[n] = 0;
+        unlink(dst);
+        if (symlink(target, dst) != 0) { perror(dst); return 1; }
+        return 0;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        if (!recursive) {
+            fprintf(stderr, "cp: %s: is a directory\n", src);
+            return 1;
+        }
+        if (mkdir(dst, st.st_mode & 07777) != 0 && errno != EEXIST) {
+            perror(dst);
+            return 1;
+        }
+        DIR *d = opendir(src);
+        if (!d) { perror(src); return 1; }
+        struct dirent *de;
+        int rc = 0;
+        while ((de = readdir(d))) {
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+            char s2[PATH_MAX], d2[PATH_MAX];
+            snprintf(s2, sizeof(s2), "%s/%s", src, de->d_name);
+            snprintf(d2, sizeof(d2), "%s/%s", dst, de->d_name);
+            if (copy_path(s2, d2, recursive) != 0) rc = 1;
+        }
+        closedir(d);
+        return rc;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        fprintf(stderr, "cp: %s: unsupported file type\n", src);
+        return 1;
+    }
+    return copy_file(src, dst, st.st_mode);
+}
+
 static int cmd_cp(int argc, char **argv)
 {
     int recursive = 0;
@@ -150,16 +219,23 @@ static int cmd_cp(int argc, char **argv)
     const char *src = argv[i];
     const char *dst = argv[i + 1];
 
-    struct stat sst;
+    struct stat sst, dstst;
     if (stat(src, &sst) != 0) { perror(src); return 1; }
     if (S_ISDIR(sst.st_mode) && !recursive) {
         fprintf(stderr, "cp: %s: is a directory\n", src);
         return 1;
     }
 
-    char cmd[PATH_MAX * 2 + 32];
-    snprintf(cmd, sizeof(cmd), "cp -a '%s' '%s' 2>/dev/null", src, dst);
-    return system(cmd) == 0 ? 0 : 1;
+    /* Если dst — существующий каталог, копируем внутрь него. */
+    char dest[PATH_MAX];
+    if (stat(dst, &dstst) == 0 && S_ISDIR(dstst.st_mode)) {
+        const char *base = strrchr(src, '/');
+        base = base ? base + 1 : src;
+        snprintf(dest, sizeof(dest), "%s/%s", dst, base);
+    } else {
+        snprintf(dest, sizeof(dest), "%s", dst);
+    }
+    return copy_path(src, dest, recursive);
 }
 
 static int cmd_mv(int argc, char **argv)
@@ -190,20 +266,47 @@ static int cmd_chmod(int argc, char **argv)
     return rc;
 }
 
+static int parse_uid(const char *s, uid_t *out)
+{
+    if (!s || !*s) return 0;
+    if (*s >= '0' && *s <= '9') { *out = (uid_t)strtoul(s, NULL, 10); return 1; }
+    struct passwd *pw = getpwnam(s);
+    if (!pw) return 0;
+    *out = pw->pw_uid;
+    return 1;
+}
+
+static int parse_gid(const char *s, gid_t *out)
+{
+    if (!s || !*s) return 0;
+    if (*s >= '0' && *s <= '9') { *out = (gid_t)strtoul(s, NULL, 10); return 1; }
+    struct group *gr = getgrnam(s);
+    if (!gr) return 0;
+    *out = gr->gr_gid;
+    return 1;
+}
+
 static int cmd_chown(int argc, char **argv)
 {
-    if (argc < 3) { fprintf(stderr, "chown: usage: chown USER FILE...\n"); return 1; }
-    const char *user = argv[1];
-    char *colon = strchr(user, ':');
+    if (argc < 3) { fprintf(stderr, "chown: usage: chown USER[:GROUP] FILE...\n"); return 1; }
+    char spec[256];
+    snprintf(spec, sizeof(spec), "%s", argv[1]);
+    char *colon = strchr(spec, ':');
+    char *user = spec;
+    char *group = NULL;
+    if (colon) { *colon = 0; group = colon + 1; }
+
     uid_t uid = (uid_t)-1;
     gid_t gid = (gid_t)-1;
-    if (colon) {
-        *colon = 0;
-        uid = (uid_t)atoi(user);
-        gid = (gid_t)atoi(colon + 1);
-    } else {
-        uid = (uid_t)atoi(user);
+    if (user[0] && !parse_uid(user, &uid)) {
+        fprintf(stderr, "chown: unknown user: %s\n", user);
+        return 1;
     }
+    if (group && *group && !parse_gid(group, &gid)) {
+        fprintf(stderr, "chown: unknown group: %s\n", group);
+        return 1;
+    }
+
     int rc = 0;
     for (int i = 2; i < argc; i++)
         if (chown(argv[i], uid, gid) != 0) { perror(argv[i]); rc = 1; }

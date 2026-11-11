@@ -115,7 +115,8 @@ int main(void)
             g_dirty = 1;
         }
         if (now - last_win >= 2 || last_win == 0) {
-            g_st.nwin = ybar_ipc_list(g_st.wins, YBAR_MAX_WIN);
+            g_st.nwin = ybar_ipc_list(g_st.wins, YBAR_MAX_WIN,
+                                      &g_st.focus_id);
             last_win = now;
             g_dirty = 1;
         }

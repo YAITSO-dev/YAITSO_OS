@@ -23,6 +23,7 @@ static void reg_global(void *data, struct wl_registry *reg, uint32_t name,
         uint32_t v = ver < 5 ? ver : 5;
         if (v < 1) v = 1;
         c->seat = wl_registry_bind(reg, name, &wl_seat_interface, v);
+        ywt_input_bind_seat(c);
     }
     else if (!strcmp(iface, wl_output_interface.name) && !c->output) {
         uint32_t v = ver < 4 ? ver : 4;

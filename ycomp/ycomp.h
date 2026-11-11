@@ -35,6 +35,7 @@ struct ycomp_view {
     struct wl_listener          map;
     struct wl_listener          unmap;
     struct wl_listener          destroy;
+    struct wl_listener          first_commit;
     struct wl_listener          request_move;
     struct wl_listener          request_resize;
     struct wl_listener          request_maximize;
@@ -94,6 +95,7 @@ struct ycomp_server {
 
     struct wl_list              outputs;
     struct wl_list              views;
+    struct wl_list              layers;
 
     int                         focused_id;
     int                         next_id;
@@ -132,6 +134,18 @@ struct ycomp_view *ycomp_view_at(struct ycomp_server *, double lx, double ly,
                                  double *sx, double *sy);
 
 void ycomp_input_new(struct wl_listener *, void *);
+void ycomp_keyboard_add(struct ycomp_server *s, struct wlr_keyboard *kb);
+struct xkb_keymap *ycomp_keymap_create(void);
+void ycomp_evdev_init(struct ycomp_server *s);
+void ycomp_pointer_motion_delta(struct ycomp_server *, uint32_t time_msec,
+                                double dx, double dy);
+void ycomp_pointer_motion_abs(struct ycomp_server *, uint32_t time_msec,
+                              double x, double y);
+void ycomp_pointer_button_event(struct ycomp_server *, uint32_t time_msec,
+                                uint32_t button, uint32_t state);
+void ycomp_pointer_axis_event(struct ycomp_server *, uint32_t time_msec,
+                              uint32_t orientation, double delta,
+                              int32_t delta_discrete, uint32_t source);
 void ycomp_cursor_motion(struct wl_listener *, void *);
 void ycomp_cursor_motion_abs(struct wl_listener *, void *);
 void ycomp_cursor_button(struct wl_listener *, void *);

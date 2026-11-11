@@ -259,6 +259,7 @@ static void complete_path(struct edit_line *e)
         if (cl > strlen(pat)) {
             size_t pl = strlen(pat);
             if (e->pos - pl == i) {
+                el_reserve(e, cl - pl);
                 memmove(e->buf + i + cl, e->buf + e->pos, e->len - e->pos + 1);
                 memcpy(e->buf + i, common, cl);
                 e->len += cl - pl;
@@ -277,6 +278,7 @@ static void complete_path(struct edit_line *e)
         if (cl > strlen(pat)) {
             size_t pl = strlen(pat);
             if (e->pos - pl == i) {
+                el_reserve(e, cl - pl);
                 memmove(e->buf + i + cl, e->buf + e->pos, e->len - e->pos + 1);
                 memcpy(e->buf + i, common, cl);
                 e->len += cl - pl;

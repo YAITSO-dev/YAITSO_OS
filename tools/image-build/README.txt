@@ -1,5 +1,5 @@
 Сборка образа без grub-mkrescue/xorriso (в песочнице их не было):
-1. Собрать бинарники из исходников (Makefile в каждой папке; шелл: gcc src/*.c -DYAITSO_VERSION=\"0.3.1\").
+1. Собрать бинарники из исходников (Makefile в каждой папке; шелл: gcc src/*.c -DYAITSO_VERSION=\"0.3.2\").
 2. Собрать корень: базовый initramfs + бинарники + distro/airootfs/ (копируется поверх корня).
 3. pack_initramfs.py <корень> initramfs.gz           — newc cpio + gzip
 4. mkfat16.py BOOTX64.EFI efi.img                     — FAT16 EFI System Partition (для UEFI El Torito)

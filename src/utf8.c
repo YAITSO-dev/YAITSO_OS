@@ -1,17 +1,23 @@
 #define _GNU_SOURCE
 #include "yaitso.h"
+#include <string.h>
 
 int utf8_len(const char *s)
 {
     if (!s) return 0;
     int n = 0;
     const unsigned char *p = (const unsigned char *)s;
-    while (*p) {
-        if      (*p < 0x80)          p += 1;
-        else if ((*p & 0xe0) == 0xc0) p += 2;
-        else if ((*p & 0xf0) == 0xe0) p += 3;
-        else if ((*p & 0xf8) == 0xf0) p += 4;
-        else                          p += 1;
+    size_t left = strlen(s);
+    while (left > 0) {
+        size_t step = 1;
+        if (*p >= 0x80) {
+            if      ((*p & 0xe0) == 0xc0) step = 2;
+            else if ((*p & 0xf0) == 0xe0) step = 3;
+            else if ((*p & 0xf8) == 0xf0) step = 4;
+        }
+        if (step > left) step = left;   /* обрезанная последовательность */
+        p += step;
+        left -= step;
         n++;
     }
     return n;

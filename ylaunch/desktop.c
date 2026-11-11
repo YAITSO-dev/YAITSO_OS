@@ -92,21 +92,17 @@ void yl_launch(const struct yl_app *a)
     pid_t pid = fork();
     if (pid != 0) return;
     setsid();
-    if (a->terminal) {
-        char *argv[4];
-        argv[0] = "yterm";
-        argv[1] = "-e";
-        argv[2] = (char *)a->exec;
-        argv[3] = NULL;
-        execvp("yterm", argv);
-        _exit(127);
-    }
+
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "%s", a->exec);
     char clean[512];
     int ci = 0;
     for (char *p = cmd; *p && ci < (int)sizeof(clean) - 1; ) {
-        if (*p == '%' && p[1]) { p += 2; continue; }
+        if (*p == '%' && p[1]) {
+            if (p[1] == '%') clean[ci++] = '%';
+            p += 2;
+            continue;
+        }
         clean[ci++] = *p++;
     }
     clean[ci] = 0;
@@ -117,6 +113,19 @@ void yl_launch(const struct yl_app *a)
     char *tok;
     while ((tok = next_tok(&p)) && n < 15) argv[n++] = tok;
     argv[n] = NULL;
+
+    if (a->terminal) {
+        /* yterm -e ожидает отдельные argv, а не одну строку с пробелами. */
+        char *targv[18];
+        int tn = 0;
+        targv[tn++] = "yterm";
+        targv[tn++] = "-e";
+        for (int i = 0; i < n && tn < 17; i++) targv[tn++] = argv[i];
+        targv[tn] = NULL;
+        execvp("yterm", targv);
+        _exit(127);
+    }
+
     if (n > 0) execvp(argv[0], argv);
     _exit(127);
 }

@@ -16,8 +16,44 @@ static int run_argv(char *const argv[])
     if (pid < 0) return -1;
     if (pid == 0) { execvp(argv[0], argv); _exit(127); }
     int st = 0;
-    waitpid(pid, &st, 0);
+    if (waitpid(pid, &st, 0) < 0) return -1;
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+/* chpasswd читает user:pass из stdin. Пароль не должен содержать
+ * ':' или перевод строки — иначе формат ломается. */
+static int run_chpasswd(const char *target, const char *user, const char *pass)
+{
+    int pfd[2];
+    if (pipe(pfd) != 0) return -1;
+    pid_t pid = fork();
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); return -1; }
+    if (pid == 0) {
+        close(pfd[1]);
+        dup2(pfd[0], 0);
+        close(pfd[0]);
+        execl("/usr/sbin/chroot", "chroot", target,
+              "/sbin/busybox", "chpasswd", (char *)NULL);
+        _exit(127);
+    }
+    close(pfd[0]);
+    char line[256];
+    int n = snprintf(line, sizeof(line), "%s:%s\n", user, pass);
+    int ok = 0;
+    if (n > 0 && (size_t)n < sizeof(line)) {
+        size_t off = 0;
+        while (off < (size_t)n) {
+            ssize_t w = write(pfd[1], line + off, (size_t)n - off);
+            if (w <= 0) break;
+            off += (size_t)w;
+        }
+        ok = (off == (size_t)n);
+    }
+    close(pfd[1]);
+    int st = 0;
+    if (waitpid(pid, &st, 0) < 0) return -1;
+    if (!ok || !WIFEXITED(st) || WEXITSTATUS(st) != 0) return -1;
+    return 0;
 }
 
 static int ask_yes_no(const char *prompt, int def)
@@ -76,7 +112,7 @@ int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 
-    printf("Yaitso OS installer 0.3.1\n");
+    printf("Yaitso OS installer 0.3.2\n");
     printf("==========================\n\n");
 
     char disk[128];
@@ -106,6 +142,10 @@ int main(int argc, char **argv)
     fflush(stdout);
     if (!fgets(pass, sizeof(pass), stdin)) return 1;
     pass[strcspn(pass, "\r\n")] = 0;
+    if (!pass[0] || strchr(pass, ':') || strchr(pass, '\n')) {
+        fprintf(stderr, "installer: недопустимый пароль\n");
+        return 1;
+    }
 
     int want_gui   = install_gui_ask();
     int want_glibc = install_glibc_ask();
@@ -118,11 +158,19 @@ int main(int argc, char **argv)
     printf("  glibc:    %s\n", want_glibc ? "да" : "нет");
     if (!ask_yes_no("Продолжить?", 0)) return 1;
 
+    /* NVMe/mmcblk используют разделитель 'p' перед номером раздела. */
     char rootp[160];
-    snprintf(rootp, sizeof(rootp), "%s3", disk);
+    size_t dl = strlen(disk);
+    if (dl && isdigit((unsigned char)disk[dl - 1]))
+        snprintf(rootp, sizeof(rootp), "%sp3", disk);
+    else
+        snprintf(rootp, sizeof(rootp), "%s3", disk);
 
     char *mkfs_argv[] = { "mkfs.ext4", "-F", rootp, NULL };
-    run_argv(mkfs_argv);
+    if (run_argv(mkfs_argv) != 0) {
+        fprintf(stderr, "installer: mkfs.ext4 failed on %s\n", rootp);
+        return 1;
+    }
 
     const char *target = "/mnt/yaitso";
     mkdir(target, 0755);
@@ -134,9 +182,19 @@ int main(int argc, char **argv)
     }
 
     char path[512];
+    snprintf(path, sizeof(path), "%s/etc", target);
+    mkdir(path, 0755);
     snprintf(path, sizeof(path), "%s/etc/hostname", target);
     FILE *f = fopen(path, "w");
-    if (f) { fprintf(f, "%s\n", hostname); fclose(f); }
+    if (!f) {
+        fprintf(stderr, "installer: не удалось записать %s: %s\n", path,
+                strerror(errno));
+        char *umnt_err[] = { "umount", (char *)target, NULL };
+        run_argv(umnt_err);
+        return 1;
+    }
+    fprintf(f, "%s\n", hostname);
+    fclose(f);
 
     if (want_gui) {
         char *argv_gui[] = { "chroot", (char *)target, "yat", "install",
@@ -150,28 +208,38 @@ int main(int argc, char **argv)
     if (want_glibc) {
         char *argv_glibc[] = { "chroot", (char *)target, "yat", "install",
                                "glibc", NULL };
-        run_argv(argv_glibc);
+        if (run_argv(argv_glibc) != 0)
+            fprintf(stderr, "installer: предупреждение: glibc не установлен\n");
         char *argv_patch[] = { "chroot", (char *)target, "yat", "install",
                                "patchelf", NULL };
-        run_argv(argv_patch);
+        if (run_argv(argv_patch) != 0)
+            fprintf(stderr, "installer: предупреждение: patchelf не установлен\n");
     }
 
     char *ua_argv[] = { "chroot", (char *)target, "useradd", "-m",
                         "-G", "wheel", user, NULL };
-    run_argv(ua_argv);
+    if (run_argv(ua_argv) != 0) {
+        fprintf(stderr, "installer: useradd failed\n");
+        char *umnt_err[] = { "umount", (char *)target, NULL };
+        run_argv(umnt_err);
+        return 1;
+    }
 
-    char chpass_cmd[512];
-    snprintf(chpass_cmd, sizeof(chpass_cmd),
-             "echo '%s:%s' | chroot %s chpasswd", user, pass, target);
-    char *sh_argv[] = { "sh", "-c", chpass_cmd, NULL };
-    run_argv(sh_argv);
+    if (run_chpasswd(target, user, pass) != 0) {
+        fprintf(stderr, "installer: chpasswd failed\n");
+        char *umnt_err[] = { "umount", (char *)target, NULL };
+        run_argv(umnt_err);
+        return 1;
+    }
 
     char *grub_argv[] = { "chroot", (char *)target, "grub-install",
                           disk, NULL };
-    run_argv(grub_argv);
+    if (run_argv(grub_argv) != 0)
+        fprintf(stderr, "installer: предупреждение: grub-install failed\n");
 
     char *umnt_argv[] = { "umount", (char *)target, NULL };
-    run_argv(umnt_argv);
+    if (run_argv(umnt_argv) != 0)
+        fprintf(stderr, "installer: предупреждение: umount failed\n");
 
     printf("\nУстановка завершена. Перезагрузка.\n");
     return 0;

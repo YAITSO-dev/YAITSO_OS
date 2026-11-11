@@ -1,8 +1,17 @@
 #include "ycomp.h"
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define BAR_APP_ID "ybar.yaitso"
+
+static int view_is_bar(struct ycomp_view *v)
+{
+    const char *app = v->xdg_toplevel->app_id;
+    return app && !strcmp(app, BAR_APP_ID);
+}
 
 static void view_map(struct wl_listener *l, void *data)
 {
@@ -13,14 +22,42 @@ static void view_map(struct wl_listener *l, void *data)
     wlr_xdg_surface_get_geometry(v->xdg_toplevel->base, &geo);
     if (v->w <= 0) v->w = geo.width;
     if (v->h <= 0) v->h = geo.height;
-    v->x = 100 + (v->id % 8) * 40;
-    v->y = 100 + (v->id % 8) * 40;
+
+    struct wlr_box screen = {0};
+    wlr_output_layout_get_box(v->server->output_layout, NULL, &screen);
+
+    if (view_is_bar(v) && screen.width > 0) {
+        /* ybar — панель: во всю ширину экрана у верхнего края. */
+        v->x = 0;
+        v->y = 0;
+        v->w = screen.width;
+        v->h = geo.height > 0 ? geo.height : 28;
+        wlr_xdg_toplevel_set_size(v->xdg_toplevel, v->w, v->h);
+    } else {
+        v->x = 100 + (v->id % 8) * 40;
+        v->y = 100 + (v->id % 8) * 40;
+    }
+
     wlr_scene_node_set_position(&v->scene_tree->node, v->x, v->y);
     wlr_scene_node_set_enabled(&v->scene_tree->node, true);
-    wlr_xdg_toplevel_set_activated(v->xdg_toplevel, true);
-    v->server->focused_id = v->id;
-    v->focused = 1;
     wlr_scene_node_raise_to_top(&v->scene_tree->node);
+    ycomp_focus_view(v->server, v->id);
+}
+
+/* Передаёт клавиатурный фокус поверхности активного окна. */
+static void keyboard_focus(struct ycomp_server *s, struct ycomp_view *v)
+{
+    if (!s->kb_group) return;
+    wlr_seat_set_keyboard(s->seat, &s->kb_group->keyboard);
+    if (v && v->mapped) {
+        wlr_seat_keyboard_notify_enter(s->seat,
+            v->xdg_toplevel->base->surface,
+            s->kb_group->keyboard.keycodes,
+            s->kb_group->keyboard.num_keycodes,
+            &s->kb_group->keyboard.modifiers);
+    } else {
+        wlr_seat_keyboard_notify_clear_focus(s->seat);
+    }
 }
 
 static void view_unmap(struct wl_listener *l, void *data)
@@ -28,17 +65,35 @@ static void view_unmap(struct wl_listener *l, void *data)
     (void)data;
     struct ycomp_view *v = wl_container_of(l, v, unmap);
     v->mapped = 0;
-    if (v->server->focused_id == v->id) v->server->focused_id = -1;
+    if (v->server->focused_id == v->id) {
+        v->server->focused_id = -1;
+        keyboard_focus(v->server, NULL);
+    }
+}
+
+/* Первый commit xdg_surface означает, что роль инициализирована — только
+ * теперь wlroots может отправить configure с размером окна. */
+static void view_first_commit(struct wl_listener *l, void *data)
+{
+    (void)data;
+    struct ycomp_view *v = wl_container_of(l, v, first_commit);
+    wl_list_remove(&v->first_commit.link);
+    wl_list_init(&v->first_commit.link);
+    wlr_xdg_toplevel_set_size(v->xdg_toplevel, 800, 600);
 }
 
 static void view_destroy(struct wl_listener *l, void *data)
 {
     (void)data;
     struct ycomp_view *v = wl_container_of(l, v, destroy);
-    if (v->server->focused_id == v->id) v->server->focused_id = -1;
+    if (v->server->focused_id == v->id) {
+        v->server->focused_id = -1;
+        keyboard_focus(v->server, NULL);
+    }
     wl_list_remove(&v->map.link);
     wl_list_remove(&v->unmap.link);
     wl_list_remove(&v->destroy.link);
+    wl_list_remove(&v->first_commit.link);
     wl_list_remove(&v->request_move.link);
     wl_list_remove(&v->request_resize.link);
     wl_list_remove(&v->request_maximize.link);
@@ -123,6 +178,8 @@ void ycomp_xdg_new_toplevel(struct wl_listener *l, void *data)
     wl_signal_add(&tl->base->surface->events.unmap, &v->unmap);
     v->destroy.notify = view_destroy;
     wl_signal_add(&tl->base->events.destroy, &v->destroy);
+    v->first_commit.notify = view_first_commit;
+    wl_signal_add(&tl->base->surface->events.commit, &v->first_commit);
     v->request_move.notify = view_request_move;
     wl_signal_add(&tl->events.request_move, &v->request_move);
     v->request_resize.notify = view_request_resize;
@@ -152,15 +209,24 @@ void ycomp_xdg_new_popup(struct wl_listener *l, void *data)
 
 void ycomp_focus_view(struct ycomp_server *s, int id)
 {
-    struct ycomp_view *v;
+    struct ycomp_view *v, *target = NULL;
     wl_list_for_each(v, &s->views, link) {
         int active = (v->id == id && v->mapped);
         v->focused = active;
         wlr_xdg_toplevel_set_activated(v->xdg_toplevel, active);
-        if (active) {
-            wlr_scene_node_raise_to_top(&v->scene_tree->node);
-            s->focused_id = id;
-        }
+        if (active) target = v;
+    }
+    if (target) {
+        wlr_scene_node_raise_to_top(&target->scene_tree->node);
+        s->focused_id = id;
+        keyboard_focus(s, target);
+        /* Панель всегда остаётся поверх остальных окон. */
+        wl_list_for_each(v, &s->views, link)
+            if (v->mapped && view_is_bar(v))
+                wlr_scene_node_raise_to_top(&v->scene_tree->node);
+    } else {
+        s->focused_id = -1;
+        keyboard_focus(s, NULL);
     }
 }
 

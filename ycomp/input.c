@@ -1,4 +1,5 @@
 #include "ycomp.h"
+#include "keymap-default.h"
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_input_device.h>
@@ -36,6 +37,84 @@ static void spawn_cmd(const char *cmd)
     setsid();
     execlp(cmd, cmd, (char *)NULL);
     _exit(127);
+}
+
+static void keyboard_key(struct wl_listener *l, void *data);
+static void keyboard_modifiers(struct wl_listener *l, void *data);
+
+/* В базовом rootfs YAITSO нет /usr/share/X11/xkb, поэтому
+ * xkb_keymap_new_from_names() возвращает NULL. В этом случае компилируем
+ * встроенную раскладку US, чтобы клавиатура работала всегда. */
+struct xkb_keymap *ycomp_keymap_create(void)
+{
+    /* Без NO_DEFAULT_INCLUDES xkbcommon возвращает NULL из
+     * xkb_context_new(), если /usr/share/X11/xkb не существует. */
+    struct xkb_context *ctx =
+        xkb_context_new(XKB_CONTEXT_NO_DEFAULT_INCLUDES);
+    if (!ctx) return NULL;
+
+    const char *root = getenv("XKB_CONFIG_ROOT");
+    if (!root || !*root) root = "/usr/share/X11/xkb";
+    char rules[512];
+    snprintf(rules, sizeof(rules), "%s/rules/evdev", root);
+
+    struct xkb_keymap *km = NULL;
+    if (access(rules, R_OK) == 0) {
+        (void)xkb_context_include_path_append(ctx, root);
+        struct xkb_rule_names names = {0};
+        km = xkb_keymap_new_from_names(ctx, &names,
+                                       XKB_KEYMAP_COMPILE_NO_FLAGS);
+    }
+    if (!km) {
+        km = xkb_keymap_new_from_string(ctx, ycomp_default_keymap,
+                                        XKB_KEYMAP_FORMAT_TEXT_V1,
+                                        XKB_KEYMAP_COMPILE_NO_FLAGS);
+        if (km)
+            fprintf(stderr, "ycomp: no xkb data, using built-in US keymap\n");
+    }
+    xkb_context_unref(ctx);
+    return km;
+}
+
+void ycomp_keyboard_add(struct ycomp_server *s, struct wlr_keyboard *kb)
+{
+    if (!s->kb_group) {
+        s->kb_group = wlr_keyboard_group_create();
+        if (!s->kb_group) {
+            fprintf(stderr, "ycomp: cannot create keyboard group\n");
+            return;
+        }
+
+        struct xkb_keymap *km = ycomp_keymap_create();
+        if (km) {
+            wlr_keyboard_set_keymap(&s->kb_group->keyboard, km);
+            xkb_keymap_unref(km);
+        } else {
+            fprintf(stderr, "ycomp: cannot create xkb keymap\n");
+        }
+        wlr_keyboard_set_repeat_info(&s->kb_group->keyboard, 25, 400);
+
+        s->keyboard_key.notify = keyboard_key;
+        wl_signal_add(&s->kb_group->keyboard.events.key, &s->keyboard_key);
+        s->keyboard_modifiers.notify = keyboard_modifiers;
+        wl_signal_add(&s->kb_group->keyboard.events.modifiers,
+                      &s->keyboard_modifiers);
+    }
+
+    /* Клавиатура группы и устройство должны иметь одинаковую раскладку,
+     * иначе wlr_keyboard_group_add_keyboard() отвергает устройство. */
+    if (!kb->keymap && s->kb_group->keyboard.keymap)
+        wlr_keyboard_set_keymap(kb, s->kb_group->keyboard.keymap);
+    wlr_keyboard_set_repeat_info(kb, 25, 400);
+
+    if (!wlr_keyboard_group_add_keyboard(s->kb_group, kb))
+        fprintf(stderr, "ycomp: cannot add keyboard to group\n");
+
+    wlr_seat_set_keyboard(s->seat, &s->kb_group->keyboard);
+
+    uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
+    if (s->kb_group) caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+    wlr_seat_set_capabilities(s->seat, caps);
 }
 
 static int match_hotkey(struct ycomp_server *s, xkb_keysym_t sym,
@@ -129,25 +208,7 @@ void ycomp_input_new(struct wl_listener *l, void *data)
     switch (dev->type) {
     case WLR_INPUT_DEVICE_KEYBOARD: {
         struct wlr_keyboard *kb = wlr_keyboard_from_input_device(dev);
-        struct xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-        struct xkb_rule_names rules = {0};
-        struct xkb_keymap *km =
-            xkb_keymap_new_from_names(ctx, &rules, XKB_KEYMAP_COMPILE_NO_FLAGS);
-        wlr_keyboard_set_keymap(kb, km);
-        xkb_keymap_unref(km);
-        xkb_context_unref(ctx);
-        wlr_keyboard_set_repeat_info(kb, 25, 400);
-
-        if (!s->kb_group) {
-            s->kb_group = wlr_keyboard_group_create();
-            s->keyboard_key.notify = keyboard_key;
-            wl_signal_add(&s->kb_group->keyboard.events.key, &s->keyboard_key);
-            s->keyboard_modifiers.notify = keyboard_modifiers;
-            wl_signal_add(&s->kb_group->keyboard.events.modifiers,
-                          &s->keyboard_modifiers);
-        }
-        wlr_keyboard_group_add_keyboard(s->kb_group, kb);
-        wlr_seat_set_keyboard(s->seat, &s->kb_group->keyboard);
+        ycomp_keyboard_add(s, kb);
         break;
     }
     case WLR_INPUT_DEVICE_POINTER:
@@ -162,14 +223,10 @@ void ycomp_input_new(struct wl_listener *l, void *data)
     wlr_seat_set_capabilities(s->seat, caps);
 }
 
-void ycomp_cursor_motion(struct wl_listener *l, void *data)
+void ycomp_pointer_motion_delta(struct ycomp_server *s, uint32_t time_msec,
+                               double dx, double dy)
 {
-    struct ycomp_server *s = wl_container_of(l, s, cursor_motion);
-    struct wlr_pointer_motion_event *ev = data;
-
     if (s->grabbing && s->grab_view) {
-        double dx = ev->delta_x;
-        double dy = ev->delta_y;
         if (s->grab_resize) {
             int nw = s->grab_view_w + (int)dx;
             int nh = s->grab_view_h + (int)dy;
@@ -184,11 +241,11 @@ void ycomp_cursor_motion(struct wl_listener *l, void *data)
             wlr_scene_node_set_position(&s->grab_view->scene_tree->node,
                                         s->grab_view->x, s->grab_view->y);
         }
-        wlr_cursor_move(s->cursor, &ev->pointer->base, dx, dy);
+        wlr_cursor_move(s->cursor, NULL, dx, dy);
         return;
     }
 
-    wlr_cursor_move(s->cursor, &ev->pointer->base, ev->delta_x, ev->delta_y);
+    wlr_cursor_move(s->cursor, NULL, dx, dy);
 
     double sx, sy;
     struct wlr_surface *surf = NULL;
@@ -196,19 +253,17 @@ void ycomp_cursor_motion(struct wl_listener *l, void *data)
                                          &surf, &sx, &sy);
     if (v) {
         wlr_seat_pointer_notify_enter(s->seat, surf, sx, sy);
-        wlr_seat_pointer_notify_motion(s->seat, ev->time_msec, sx, sy);
+        wlr_seat_pointer_notify_motion(s->seat, time_msec, sx, sy);
     } else {
         wlr_seat_pointer_clear_focus(s->seat);
     }
     wlr_seat_pointer_notify_frame(s->seat);
 }
 
-void ycomp_cursor_motion_abs(struct wl_listener *l, void *data)
+void ycomp_pointer_motion_abs(struct ycomp_server *s, uint32_t time_msec,
+                              double x, double y)
 {
-    struct ycomp_server *s = wl_container_of(l, s, cursor_motion_absolute);
-    struct wlr_pointer_motion_absolute_event *ev = data;
-
-    wlr_cursor_warp_absolute(s->cursor, &ev->pointer->base, ev->x, ev->y);
+    wlr_cursor_warp_absolute(s->cursor, NULL, x, y);
 
     double sx, sy;
     struct wlr_surface *surf = NULL;
@@ -216,19 +271,17 @@ void ycomp_cursor_motion_abs(struct wl_listener *l, void *data)
                                          &surf, &sx, &sy);
     if (v) {
         wlr_seat_pointer_notify_enter(s->seat, surf, sx, sy);
-        wlr_seat_pointer_notify_motion(s->seat, ev->time_msec, sx, sy);
+        wlr_seat_pointer_notify_motion(s->seat, time_msec, sx, sy);
     } else {
         wlr_seat_pointer_clear_focus(s->seat);
     }
     wlr_seat_pointer_notify_frame(s->seat);
 }
 
-void ycomp_cursor_button(struct wl_listener *l, void *data)
+void ycomp_pointer_button_event(struct ycomp_server *s, uint32_t time_msec,
+                                uint32_t button, uint32_t state)
 {
-    struct ycomp_server *s = wl_container_of(l, s, cursor_button);
-    struct wlr_pointer_button_event *ev = data;
-
-    if (ev->state == WL_POINTER_BUTTON_STATE_RELEASED && s->grabbing) {
+    if (state == WL_POINTER_BUTTON_STATE_RELEASED && s->grabbing) {
         s->grabbing = 0;
         s->grab_resize = 0;
         s->grab_view = NULL;
@@ -240,7 +293,7 @@ void ycomp_cursor_button(struct wl_listener *l, void *data)
     struct ycomp_view *v = ycomp_view_at(s, s->cursor->x, s->cursor->y,
                                          &surf, &sx, &sy);
 
-    if (ev->state == WL_POINTER_BUTTON_STATE_PRESSED && v) {
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED && v) {
         ycomp_focus_view(s, v->id);
 
         int mods = 0;
@@ -251,7 +304,7 @@ void ycomp_cursor_button(struct wl_listener *l, void *data)
         if (mods) {
             s->grab_view = v;
             s->grabbing = 1;
-            s->grab_resize = (ev->button == BTN_RIGHT);
+            s->grab_resize = (button == BTN_RIGHT);
             s->grab_sx = s->cursor->x;
             s->grab_sy = s->cursor->y;
             s->grab_view_x = v->x;
@@ -263,20 +316,48 @@ void ycomp_cursor_button(struct wl_listener *l, void *data)
     }
 
     if (v && surf) {
-        wlr_seat_pointer_notify_button(s->seat, ev->time_msec,
-                                       ev->button, ev->state);
+        wlr_seat_pointer_notify_button(s->seat, time_msec, button, state);
     }
     wlr_seat_pointer_notify_frame(s->seat);
+}
+
+void ycomp_pointer_axis_event(struct ycomp_server *s, uint32_t time_msec,
+                              uint32_t orientation, double delta,
+                              int32_t delta_discrete, uint32_t source)
+{
+    wlr_seat_pointer_notify_axis(s->seat, time_msec, orientation, delta,
+                                 delta_discrete, source,
+                                 WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+    wlr_seat_pointer_notify_frame(s->seat);
+}
+
+void ycomp_cursor_motion(struct wl_listener *l, void *data)
+{
+    struct ycomp_server *s = wl_container_of(l, s, cursor_motion);
+    struct wlr_pointer_motion_event *ev = data;
+    ycomp_pointer_motion_delta(s, ev->time_msec, ev->delta_x, ev->delta_y);
+}
+
+void ycomp_cursor_motion_abs(struct wl_listener *l, void *data)
+{
+    struct ycomp_server *s = wl_container_of(l, s, cursor_motion_absolute);
+    struct wlr_pointer_motion_absolute_event *ev = data;
+    ycomp_pointer_motion_abs(s, ev->time_msec, ev->x, ev->y);
+}
+
+void ycomp_cursor_button(struct wl_listener *l, void *data)
+{
+    struct ycomp_server *s = wl_container_of(l, s, cursor_button);
+    struct wlr_pointer_button_event *ev = data;
+    ycomp_pointer_button_event(s, ev->time_msec, ev->button, ev->state);
 }
 
 void ycomp_cursor_axis(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, cursor_axis);
     struct wlr_pointer_axis_event *ev = data;
-    wlr_seat_pointer_notify_axis(s->seat, ev->time_msec, ev->orientation,
-                                 ev->delta, ev->delta_discrete, ev->source,
-                                 WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
-    wlr_seat_pointer_notify_frame(s->seat);
+    ycomp_pointer_axis_event(s, ev->time_msec, ev->orientation, ev->delta,
+                             ev->delta_discrete, ev->source);
 }
 
 void ycomp_cursor_frame(struct wl_listener *l, void *data)

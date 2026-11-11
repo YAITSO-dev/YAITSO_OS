@@ -72,8 +72,9 @@ int ybar_ipc_send(const char *cmd, char *reply, size_t rn)
     return 0;
 }
 
-int ybar_ipc_list(char wins[][96], int max)
+int ybar_ipc_list(char wins[][96], int max, int *focus_id)
 {
+    if (focus_id) *focus_id = -1;
     char buf[8192];
     if (ybar_ipc_send("list", buf, sizeof(buf)) != 0) return 0;
     int n = 0;
@@ -86,7 +87,14 @@ int ybar_ipc_list(char wins[][96], int max)
         if (t1) {
             char *t2 = strchr(t1 + 1, '\t');
             if (t2) {
-                snprintf(wins[n], 96, "%s", t2 + 1);
+                int id = atoi(p);
+                char *title = t2 + 1;
+                char *t3 = strchr(title, '\t');
+                if (t3) {
+                    *t3 = 0;
+                    if (focus_id && atoi(t3 + 1) == 1) *focus_id = id;
+                }
+                snprintf(wins[n], 96, "%s", title);
                 n++;
             }
         }

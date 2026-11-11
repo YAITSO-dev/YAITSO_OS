@@ -38,6 +38,9 @@ struct yaitso_ctx {
     int                  alias_count;
     int                  alias_cap;
 
+    char **posargs;              /* $0, $1, ... */
+    int    posargc;
+
     int    interactive;
     int    last_status;
     pid_t  last_bg_pid;

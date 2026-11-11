@@ -14,7 +14,6 @@ static int split_pipes(const char *line, char ***out, int *outn)
 {
     int cap = 8, n = 0;
     char **arr = xmalloc(sizeof(char *) * (size_t)cap);
-    const char *p = line;
     size_t start = 0;
     int in_sq = 0, in_dq = 0;
     for (size_t i = 0; line[i]; i++) {
@@ -69,14 +68,20 @@ static int run_argv(struct yaitso_ctx *c, char *const argv[],
             dup2(fd, 0); close(fd);
         }
 
-        if (outfile) {
+        if (outfile && !*outfile) {
+            /* 1>&2 — stdout туда же, куда stderr. */
+            dup2(2, 1);
+        } else if (outfile) {
             int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
             int fd = open(outfile, flags, 0644);
             if (fd < 0) { perror(outfile); _exit(127); }
             dup2(fd, 1); close(fd);
         }
 
-        if (errfile) {
+        if (errfile && !*errfile) {
+            /* 2>&1 — stderr туда же, куда stdout. */
+            dup2(1, 2);
+        } else if (errfile) {
             int flags = O_WRONLY | O_CREAT | (errappend ? O_APPEND : O_TRUNC);
             int fd = open(errfile, flags, 0644);
             if (fd < 0) { perror(errfile); _exit(127); }
@@ -182,6 +187,8 @@ int exec_pipeline(struct yaitso_ctx *c, char *const *stages, int nstages,
 
     int prev = -1;
     pid_t last_pid = 0;
+    pid_t *pids = xmalloc(sizeof(pid_t) * (size_t)nstages);
+    int npids = 0;
     for (int i = 0; i < nstages; i++) {
         int pipefd[2];
         int is_last = (i == nstages - 1);
@@ -245,6 +252,9 @@ int exec_pipeline(struct yaitso_ctx *c, char *const *stages, int nstages,
                 int fd = open(f, O_RDONLY);
                 if (fd < 0) { perror(f); _exit(127); }
                 dup2(fd, 0); close(fd);
+            } else if (bg) {
+                int fd = open("/dev/null", O_RDONLY);
+                if (fd >= 0) { dup2(fd, 0); close(fd); }
             }
 
             if (!is_last) {
@@ -253,18 +263,30 @@ int exec_pipeline(struct yaitso_ctx *c, char *const *stages, int nstages,
                 close(pipefd[1]);
             } else if (outfile || out_) {
                 const char *f = outfile ? outfile : out_;
-                int fl = (append || app) ? O_APPEND : O_TRUNC;
-                int fd = open(f, O_WRONLY | O_CREAT | fl, 0644);
-                if (fd < 0) { perror(f); _exit(127); }
-                dup2(fd, 1); close(fd);
+                if (!*f) {
+                    dup2(2, 1);
+                } else {
+                    int fl = (append || app) ? O_APPEND : O_TRUNC;
+                    int fd = open(f, O_WRONLY | O_CREAT | fl, 0644);
+                    if (fd < 0) { perror(f); _exit(127); }
+                    dup2(fd, 1); close(fd);
+                }
             }
 
-            if (errfile || err_) {
-                const char *f = errfile ? errfile : err_;
+            const char *fe = errfile ? errfile : err_;
+            if (fe && !*fe) {
+                dup2(1, 2);
+            } else if (fe) {
                 int fl = (errappend || errapp) ? O_APPEND : O_TRUNC;
-                int fd = open(f, O_WRONLY | O_CREAT | fl, 0644);
-                if (fd < 0) { perror(f); _exit(127); }
+                int fd = open(fe, O_WRONLY | O_CREAT | fl, 0644);
+                if (fd < 0) { perror(fe); _exit(127); }
                 dup2(fd, 2); close(fd);
+            }
+
+            /* Встроенные команды тоже должны работать в конвейере. */
+            if (commands_run(c, fn, final) == 0) {
+                fflush(NULL);
+                _exit(c->last_status);
             }
 
             char **envp = env_array(c);
@@ -273,6 +295,7 @@ int exec_pipeline(struct yaitso_ctx *c, char *const *stages, int nstages,
             _exit(127);
         }
         setpgid(pid, pid);
+        pids[npids++] = pid;
 
         if (prev >= 0) close(prev);
         if (!is_last) close(pipefd[1]);
@@ -284,9 +307,22 @@ int exec_pipeline(struct yaitso_ctx *c, char *const *stages, int nstages,
         xfree(in_); xfree(out_); xfree(err_);
     }
 
-    int st = 0;
-    if (last_pid) waitpid(last_pid, &st, 0);
-    while (waitpid(-1, NULL, 0) > 0) {}
+    if (bg) {
+        int jid = jobs_add(c, last_pid, stages[0]);
+        printf("[%d] %d\n", jid, (int)last_pid);
+        xfree(pids);
+        return 0;
+    }
+
+    /* Ждём только процессы этого конвейера, не трогая фоновые задания. */
+    int st = 0, last_st = 0;
+    for (int i = 0; i < npids; i++) {
+        int cur = 0;
+        while (waitpid(pids[i], &cur, 0) < 0 && errno == EINTR) { }
+        if (pids[i] == last_pid) last_st = cur;
+    }
+    xfree(pids);
+    st = last_st;
 
     int code = WIFEXITED(st) ? WEXITSTATUS(st) : 128;
     c->last_status = code;
@@ -324,6 +360,11 @@ int exec_line(struct yaitso_ctx *c, const char *line)
             if (ch == ';') { seg_end = q; op = 0; break; }
             if (ch == '&' && q[1] == '&') { seg_end = q; op = 1; break; }
             if (ch == '|' && q[1] == '|') { seg_end = q; op = 2; break; }
+            /* Одиночный '&' — фон. Не путать с 2>&1 и &> файл. */
+            if (ch == '&' && q[1] != '>' &&
+                !(q > seg_start && q[-1] == '>')) {
+                seg_end = q; op = 3; break;
+            }
             q++;
         }
         if (!seg_end) { seg_end = q; op = 0; }
@@ -337,7 +378,7 @@ int exec_line(struct yaitso_ctx *c, const char *line)
 
         if (run_next) {
             result = exec_pipeline(c, stages, nstages, NULL, NULL, 0,
-                                   NULL, 0, 0);
+                                   NULL, 0, op == 3 ? 1 : 0);
         }
 
         for (int i = 0; i < nstages; i++) xfree(stages[i]);
@@ -348,11 +389,13 @@ int exec_line(struct yaitso_ctx *c, const char *line)
         if (op == 0) run_next = 1;
         else if (op == 1) run_next = (result == 0);
         else if (op == 2) run_next = (result != 0);
+        else if (op == 3) run_next = 1;   /* фон: следующая команда сразу */
 
         p = seg_end;
         if (*p == ';') p++;
         else if (*p == '&' && p[1] == '&') p += 2;
         else if (*p == '|' && p[1] == '|') p += 2;
+        else if (*p == '&') p++;
     }
 
     xfree(copy);

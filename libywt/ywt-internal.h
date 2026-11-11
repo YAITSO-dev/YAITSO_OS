@@ -46,6 +46,8 @@ struct xdg_wm_base   *ywt_ctx_wm_base(ywt_ctx_t *);
 struct wl_seat       *ywt_ctx_seat(ywt_ctx_t *);
 
 void ywt_input_attach(ywt_ctx_t *);
+void ywt_input_bind_seat(ywt_ctx_t *);
 void ywt_input_detach(ywt_ctx_t *);
+void ywt_input_set_active(ywt_surface_t *);
 
 #endif

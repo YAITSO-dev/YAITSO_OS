@@ -1,11 +1,13 @@
-.TH START-DESKTOP 1 "2026" "Yaitso OS 0.3.1" "User Commands"
+.TH START-DESKTOP 1 "2026" "Yaitso OS 0.3.2" "User Commands"
 .SH NAME
 start-desktop \- запуск графической сессии Yaitso OS
 .SH SYNOPSIS
 .B start-desktop
 .SH DESCRIPTION
 start-desktop проверяет наличие DRM-устройства, устанавливает
-XDG_RUNTIME_DIR, XDG_SESSION_TYPE=wayland, запускает ybar и ycomp.
+XDG_RUNTIME_DIR и XDG_SESSION_TYPE=wayland, ждёт Wayland-сокет,
+запускает панель ybar, терминал yterm и композитор ycomp.
+Журнал композитора пишется в /var/log/ycomp.log.
 .SH AUTHORS
 Yaitso OS project
 Часть 1 — yat/ + yhttpd/

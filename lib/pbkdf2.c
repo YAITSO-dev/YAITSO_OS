@@ -1,5 +1,6 @@
 #include "libuser.h"
 #include <string.h>
+#include <stdlib.h>
 #include <stdint.h>
 
 typedef struct {
@@ -160,7 +161,12 @@ void pbkdf2_sha256(const char *password, const char *salt,
 {
     size_t plen = strlen(password);
     size_t slen = strlen(salt);
-    unsigned char buf[64 + 4];
+    unsigned char sbuf[68];
+    unsigned char *buf = sbuf;
+    if (slen + 4 > sizeof(sbuf)) {
+        buf = malloc(slen + 4);
+        if (!buf) return;
+    }
 
     int block = 1;
     size_t offset = 0;
@@ -189,4 +195,5 @@ void pbkdf2_sha256(const char *password, const char *salt,
         offset += copy;
         block++;
     }
+    if (buf != sbuf) free(buf);
 }

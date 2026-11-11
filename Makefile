@@ -1,7 +1,7 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra   -std=c11 -O2 -Iinclude \
           -D_POSIX_C_SOURCE=200809L \
-          -DYAITSO_VERSION='"0.3.1"'
+          -DYAITSO_VERSION='"0.3.2"'
 TARGET  = yaitso
 SRC     = src/main.c src/commands.c src/builtin.c src/util.c \
           src/history.c src/utf8.c src/config.c src/shell.c \
@@ -9,18 +9,19 @@ SRC     = src/main.c src/commands.c src/builtin.c src/util.c \
           src/suggest.c src/posargs.c src/expand.c src/env.c
 OBJ     = $(SRC:.c=.o)
 
-ISO     = yaitso-0.3.1.iso
+ISO     = yaitso-0.3.2.iso
 
 .NOTPARALLEL:
 
 all: tools ytui_init $(TARGET) yat yhttpd init svc getty users installer ybox net yctl
 
-gui: libywt ycomp yterm ybar ylaunch
+gui: libywt ycomp yterm ybar ylaunch start-desktop
 	$(MAKE) -C libywt
 	$(MAKE) -C ycomp
 	$(MAKE) -C yterm
 	$(MAKE) -C ybar
 	$(MAKE) -C ylaunch
+	$(MAKE) -C start-desktop
 
 tools:
 	$(MAKE) -C tools
@@ -31,7 +32,9 @@ ytui_init: tools
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ)
 
-%.o: %.c include/yaitso.h
+# Makefile в зависимостях: смена -DYAITSO_VERSION должна пересобирать все
+# объекты, иначе часть из них остаётся со старой версией.
+%.o: %.c include/yaitso.h Makefile
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 yat:
@@ -42,6 +45,8 @@ init:
 	$(MAKE) -C init
 svc:
 	$(MAKE) -C svc
+start-desktop:
+	$(MAKE) -C start-desktop
 getty:
 	$(MAKE) -C login
 users:

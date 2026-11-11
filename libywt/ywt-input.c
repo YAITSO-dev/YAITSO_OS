@@ -9,6 +9,7 @@
 struct ywt_input {
     ywt_ctx_t          *ctx;
     ywt_surface_t      *active;
+    ywt_surface_t      *ptr_surface;
     struct xkb_context *xkb_ctx;
     struct xkb_keymap  *xkb_keymap;
     struct xkb_state   *xkb_state;
@@ -32,7 +33,12 @@ static void kb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt,
     char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
     if (map == MAP_FAILED) return;
-    if (!in->xkb_ctx) in->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    /* Раскладка приходит готовой строкой от композитора, include-пути не
+     * нужны. С XKB_CONTEXT_NO_FLAGS xkb_context_new() возвращает NULL в
+     * rootfs без /usr/share/X11/xkb, и клавиатура клиента перестаёт работать. */
+    if (!in->xkb_ctx)
+        in->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_DEFAULT_INCLUDES);
+    if (!in->xkb_ctx) { munmap(map, size); return; }
     if (in->xkb_keymap) xkb_keymap_unref(in->xkb_keymap);
     if (in->xkb_state)  xkb_state_unref(in->xkb_state);
     in->xkb_keymap = xkb_keymap_new_from_string(in->xkb_ctx, map,
@@ -42,18 +48,26 @@ static void kb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt,
     if (in->xkb_keymap) in->xkb_state = xkb_state_new(in->xkb_keymap);
 }
 
+static ywt_surface_t *surface_from_wl(struct wl_surface *ws)
+{
+    return ws ? (ywt_surface_t *)wl_surface_get_user_data(ws) : NULL;
+}
+
 static void kb_enter(void *d, struct wl_keyboard *kb, uint32_t serial,
                      struct wl_surface *ws, struct wl_array *keys)
 {
-    (void)kb; (void)serial; (void)keys; (void)ws;
+    (void)kb; (void)serial; (void)keys;
     struct ywt_input *in = d;
-    (void)in;
+    ywt_surface_t *s = surface_from_wl(ws);
+    if (s) in->active = s;
 }
 
 static void kb_leave(void *d, struct wl_keyboard *kb, uint32_t serial,
                      struct wl_surface *ws)
 {
-    (void)d; (void)kb; (void)serial; (void)ws;
+    (void)kb; (void)serial;
+    struct ywt_input *in = d;
+    if (in->active == surface_from_wl(ws)) in->active = NULL;
 }
 
 static uint32_t compute_mods(struct ywt_input *in)
@@ -122,7 +136,8 @@ static void ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
     in->px = wl_fixed_to_int(sx);
     in->py = wl_fixed_to_int(sy);
     in->ptr_inside = 1;
-    ywt_surface_t *s = input_surface(in);
+    in->ptr_surface = surface_from_wl(ws);
+    ywt_surface_t *s = in->ptr_surface;
     if (s && s->on_motion) s->on_motion(s->cb_data, in->px, in->py);
 }
 
@@ -132,6 +147,7 @@ static void ptr_leave(void *d, struct wl_pointer *p, uint32_t serial,
     (void)p; (void)serial; (void)ws;
     struct ywt_input *in = d;
     in->ptr_inside = 0;
+    in->ptr_surface = NULL;
 }
 
 static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time,
@@ -141,7 +157,7 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time,
     struct ywt_input *in = d;
     in->px = wl_fixed_to_int(sx);
     in->py = wl_fixed_to_int(sy);
-    ywt_surface_t *s = input_surface(in);
+    ywt_surface_t *s = in->ptr_surface ? in->ptr_surface : input_surface(in);
     if (s && s->on_motion) s->on_motion(s->cb_data, in->px, in->py);
 }
 
@@ -150,7 +166,7 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial,
 {
     (void)p; (void)serial; (void)time;
     struct ywt_input *in = d;
-    ywt_surface_t *s = input_surface(in);
+    ywt_surface_t *s = in->ptr_surface ? in->ptr_surface : input_surface(in);
     if (s && s->on_ptr) s->on_ptr(s->cb_data, in->px, in->py, button, state);
 }
 
@@ -159,7 +175,7 @@ static void ptr_axis(void *d, struct wl_pointer *p, uint32_t time,
 {
     (void)p; (void)time;
     struct ywt_input *in = d;
-    ywt_surface_t *s = input_surface(in);
+    ywt_surface_t *s = in->ptr_surface ? in->ptr_surface : input_surface(in);
     if (s && s->on_axis)
         s->on_axis(s->cb_data, in->px, in->py, axis,
                    wl_fixed_to_int(value));
@@ -211,12 +227,21 @@ void ywt_input_set_active(ywt_surface_t *s)
     g_in.active = s;
 }
 
-void ywt_input_attach(ywt_ctx_t *c)
+/* Слушатель wl_seat нужно вешать сразу после bind: сервер присылает
+ * capabilities в ответ на bind, и событие может быть доставлено ещё до
+ * ywt_input_attach(). Поздно добавленный слушатель его уже не получит. */
+void ywt_input_bind_seat(ywt_ctx_t *c)
 {
-    if (!c->seat) return;
+    if (!c || !c->seat || c->input_state) return;
     g_in.ctx = c;
     c->input_state = &g_in;
     wl_seat_add_listener(c->seat, &seat_listener, &g_in);
+}
+
+void ywt_input_attach(ywt_ctx_t *c)
+{
+    if (!c->seat) return;
+    ywt_input_bind_seat(c);
     wl_display_roundtrip(c->display);
 }
 
@@ -230,4 +255,5 @@ void ywt_input_detach(ywt_ctx_t *c)
     memset(&g_in, 0, sizeof(g_in));
     c->pointer = NULL;
     c->keyboard = NULL;
+    c->input_state = NULL;
 }

@@ -6,6 +6,7 @@
 #include <termios.h>
 #include <crypt.h>
 #include <pwd.h>
+#include <shadow.h>
 #include <grp.h>
 #include <errno.h>
 
@@ -35,10 +36,11 @@ static int user_in_wheel(const char *user)
 
 static int check_pass(const char *user, const char *pass)
 {
-    struct passwd *pw = getpwnam(user);
-    if (!pw) return -1;
-    char *h = crypt(pass, pw->pw_passwd);
-    return h && strcmp(h, pw->pw_passwd) == 0 ? 0 : -1;
+    struct spwd *sp = getspnam(user);
+    const char *hash = sp ? sp->sp_pwdp : NULL;
+    if (!hash || !*hash || hash[0] == '!' || hash[0] == '*') return -1;
+    char *h = crypt(pass, hash);
+    return h && strcmp(h, hash) == 0 ? 0 : -1;
 }
 
 int main(int argc, char **argv)
@@ -67,6 +69,7 @@ int main(int argc, char **argv)
     }
 
     if (setgid(0) != 0) return 1;
+    if (setgroups(0, NULL) != 0) return 1;
     if (setuid(0) != 0) return 1;
 
     execvp(argv[1], argv + 1);

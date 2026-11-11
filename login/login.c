@@ -43,8 +43,23 @@ static void show_nologin(void)
     fclose(f);
 }
 
+/* Допустимые имена: без '/', без "..", без управляющих символов. */
+static int valid_user(const char *user)
+{
+    if (!user || !*user) return 0;
+    size_t len = strlen(user);
+    if (len >= 64) return 0;
+    if (!strcmp(user, ".") || !strcmp(user, "..")) return 0;
+    for (const unsigned char *p = (const unsigned char *)user; *p; p++) {
+        if (*p < 0x21 || *p > 0x7e) return 0;
+        if (*p == '/') return 0;
+    }
+    return 1;
+}
+
 static void ban_path(const char *user, char *out, size_t n)
 {
+    if (!valid_user(user)) { if (n) out[0] = 0; return; }
     snprintf(out, n, "%s/%s", BANS_DIR, user);
 }
 
@@ -52,6 +67,7 @@ static int check_ban(const char *user)
 {
     char path[256];
     ban_path(user, path, sizeof(path));
+    if (!path[0]) return 0;
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     int cnt = 0;
@@ -76,6 +92,7 @@ static void record_fail(const char *user)
 
     char path[256];
     ban_path(user, path, sizeof(path));
+    if (!path[0]) return;
 
     int cnt = 0;
     FILE *f = fopen(path, "r");
@@ -93,7 +110,7 @@ static void clear_fail(const char *user)
 {
     char path[256];
     ban_path(user, path, sizeof(path));
-    unlink(path);
+    if (path[0]) unlink(path);
 }
 
 static void read_line(char *buf, size_t n)
@@ -160,6 +177,11 @@ int main(int argc, char **argv)
         char user[64];
         read_line(user, sizeof(user));
         if (!user[0]) continue;
+        if (!valid_user(user) || !getpwnam(user)) {
+            printf("login: unknown user\n");
+            sleep(1);
+            continue;
+        }
 
         if (check_ban(user)) {
             printf("login: account locked for %d seconds\n", LOCK_SECONDS);

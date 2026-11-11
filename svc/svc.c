@@ -13,6 +13,9 @@
 #include <sched.h>
 #include <errno.h>
 #include <time.h>
+#include <ctype.h>
+#include <pwd.h>
+#include <grp.h>
 
 #define SVC_DIR     "/etc/yaitso/services"
 #define RUN_DIR     "/run/svc"
@@ -45,6 +48,16 @@ static char *trim(char *s)
     return s;
 }
 
+static int valid_svc_name(const char *n)
+{
+    if (!n || !*n || strlen(n) >= 64) return 0;
+    if (!strcmp(n, ".") || !strcmp(n, "..")) return 0;
+    for (const char *p = n; *p; p++)
+        if (!(isalnum((unsigned char)*p) || *p == '_' || *p == '-' || *p == '.'))
+            return 0;
+    return 1;
+}
+
 static int parse_svc(const char *path, struct service *sv)
 {
     memset(sv, 0, sizeof(*sv));
@@ -74,7 +87,7 @@ static int parse_svc(const char *path, struct service *sv)
         else if (!strcmp(k, "sandbox")) snprintf(sv->sandbox, sizeof(sv->sandbox), "%s", v);
     }
     fclose(f);
-    return sv->name[0] ? 0 : -1;
+    return valid_svc_name(sv->name) ? 0 : -1;
 }
 
 static int read_pid(const char *name)
@@ -134,6 +147,16 @@ static int do_sandbox(void)
     return 0;
 }
 
+static int drop_user(const char *user)
+{
+    struct passwd *pw = getpwnam(user);
+    if (!pw) return -1;
+    if (initgroups(user, pw->pw_gid) != 0) return -1;
+    if (setgid(pw->pw_gid) != 0) return -1;
+    if (setuid(pw->pw_uid) != 0) return -1;
+    return 0;
+}
+
 static pid_t spawn_service(const struct service *sv)
 {
     char *argv[128];
@@ -161,6 +184,8 @@ static pid_t spawn_service(const struct service *sv)
 
         int devnull = open("/dev/null", O_RDONLY);
         if (devnull >= 0) { dup2(devnull, 0); if (devnull > 2) close(devnull); }
+
+        if (sv->user[0] && drop_user(sv->user) != 0) _exit(126);
 
         execvp(argv[0], argv);
         _exit(127);
@@ -357,7 +382,7 @@ static int svc_daemon(void)
 static void usage(void)
 {
     fprintf(stderr,
-        "svc 0.3.1 — сервис-менеджер Yaitso OS\n"
+        "svc 0.3.2 — сервис-менеджер Yaitso OS\n"
         "  svc list             — список сервисов\n"
         "  svc start <name>     — запустить\n"
         "  svc stop <name>      — остановить\n"
@@ -375,6 +400,10 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "list"))    return svc_list();
     if (!strcmp(cmd, "daemon"))  return svc_daemon();
     if (argc < 3) { usage(); return 2; }
+    if (!valid_svc_name(argv[2])) {
+        fprintf(stderr, "svc: недопустимое имя сервиса: %s\n", argv[2]);
+        return 2;
+    }
 
     if (!strcmp(cmd, "start"))   return svc_start(argv[2]);
     if (!strcmp(cmd, "stop"))    return svc_stop(argv[2]);

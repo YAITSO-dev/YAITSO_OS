@@ -7,6 +7,19 @@
 #include <pwd.h>
 #include <limits.h>
 
+static void set_posargs(struct yaitso_ctx *c, int n, char **v)
+{
+    for (int i = 0; i < c->posargc; i++) xfree(c->posargs[i]);
+    xfree(c->posargs);
+    c->posargs = NULL;
+    c->posargc = 0;
+    if (n <= 0) return;
+    c->posargs = xmalloc(sizeof(char *) * (size_t)n);
+    for (int i = 0; i < n; i++)
+        c->posargs[i] = xstrdup(v[i]);
+    c->posargc = n;
+}
+
 static void init_ctx(struct yaitso_ctx *c)
 {
     memset(c, 0, sizeof(*c));
@@ -67,6 +80,8 @@ static void free_ctx(struct yaitso_ctx *c)
         xfree(c->aliases[i].value);
     }
     xfree(c->aliases);
+    for (int i = 0; i < c->posargc; i++) xfree(c->posargs[i]);
+    xfree(c->posargs);
     history_free(c);
 }
 
@@ -75,13 +90,20 @@ int main(int argc, char **argv)
     struct yaitso_ctx ctx;
     init_ctx(&ctx);
 
-    if (argc >= 3 && !strcmp(argv[1], "-c")) {
-        int rc = exec_line(&ctx, argv[2]);
+    if (argc >= 2 && !strcmp(argv[1], "-c")) {
+        int i = 2;
+        if (i < argc && !strcmp(argv[i], "--")) i++;
+        if (i >= argc) { free_ctx(&ctx); return 0; }
+        /* argv[i] — команда; argv[i+1] — $0, дальше $1... */
+        if (i + 1 < argc) set_posargs(&ctx, argc - (i + 1), argv + i + 1);
+        else { char *z = "yaitso"; set_posargs(&ctx, 1, &z); }
+        int rc = exec_line(&ctx, argv[i]);
         free_ctx(&ctx);
         return rc;
     }
 
     if (argc >= 2 && argv[1][0] != '-') {
+        set_posargs(&ctx, argc - 1, argv + 1);
         FILE *f = fopen(argv[1], "r");
         if (!f) { perror(argv[1]); free_ctx(&ctx); return 1; }
         char line[8192];
@@ -97,6 +119,7 @@ int main(int argc, char **argv)
         return rc;
     }
 
+    if (argc > 0) set_posargs(&ctx, 1, argv);
     int rc = shell_run(&ctx);
     free_ctx(&ctx);
     return rc;

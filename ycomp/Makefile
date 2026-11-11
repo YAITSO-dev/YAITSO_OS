@@ -3,7 +3,7 @@ CFLAGS  ?= -I. -DWLR_USE_UNSTABLE -Wall -Wextra   -std=c11 -O2 -D_GNU_SOURCE \
            $(shell pkg-config --cflags wlroots-0.18 wayland-server xkbcommon)
 LIBS     = $(shell pkg-config --libs wlroots-0.18 wayland-server xkbcommon) -lm
 
-SRC = ycomp.c server.c output.c view.c input.c layer.c decorations.c config.c ipc.c
+SRC = ycomp.c server.c output.c view.c input.c evdev.c layer.c decorations.c config.c ipc.c
 OBJ = $(SRC:.c=.o)
 
 all: ycomp

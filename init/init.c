@@ -48,7 +48,8 @@ static void mkdir_p(const char *p, mode_t m)
 /* Modules loaded at boot, in order. bochs: QEMU -vga std (PCI 1234:1111).
  * virtio_gpu: QEMU -vga virtio (PCI 1af4:1050). A module that was not shipped
  * is reported and skipped, it is not fatal. */
-static const char *boot_modules[] = { "bochs", "virtio_gpu", NULL };
+static const char *boot_modules[] = { "bochs", "virtio_gpu",
+                                      "psmouse", "usbhid", NULL };
 
 static void mount_one(const char *src, const char *tgt, const char *type,
                       unsigned long flags, const char *data)

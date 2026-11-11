@@ -61,6 +61,11 @@ struct yt_term {
 
     int              saved_x, saved_y;
 
+    /* Незавершённая UTF-8 последовательность между вызовами feed(). */
+    uint32_t         utf8_cp;
+    int              utf8_need;
+    int              utf8_have;
+
     int              bracketed_paste;
     int              bell;
 };

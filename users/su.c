@@ -6,6 +6,7 @@
 #include <termios.h>
 #include <crypt.h>
 #include <pwd.h>
+#include <shadow.h>
 #include <grp.h>
 #include <errno.h>
 
@@ -26,20 +27,32 @@ static void read_pass(char *buf, size_t n)
 
 static int check_pass(const char *user, const char *pass)
 {
-    struct passwd *pw = getpwnam(user);
-    if (!pw) return -1;
-    char *h = crypt(pass, pw->pw_passwd);
-    return h && strcmp(h, pw->pw_passwd) == 0 ? 0 : -1;
+    struct spwd *sp = getspnam(user);
+    const char *hash = sp ? sp->sp_pwdp : NULL;
+    if (!hash || !*hash || hash[0] == '!' || hash[0] == '*') return -1;
+    char *h = crypt(pass, hash);
+    return h && strcmp(h, hash) == 0 ? 0 : -1;
 }
 
 int main(int argc, char **argv)
 {
-    const char *user = (argc > 1) ? argv[1] : "root";
+    int login_shell = 0;
+    const char *user = "root";
+    int ai = 1;
+    if (ai < argc && (!strcmp(argv[ai], "-") || !strcmp(argv[ai], "-l"))) {
+        login_shell = 1;
+        ai++;
+    }
+    if (ai < argc) user = argv[ai++];
+    if (ai < argc) {
+        fprintf(stderr, "usage: su [-] [user]\n");
+        return 2;
+    }
 
     struct passwd *pw = getpwnam(user);
     if (!pw) { fprintf(stderr, "su: %s не найден\n", user); return 1; }
 
-    if (getuid() != 0) {
+    if (getuid() != 0 && pw->pw_uid != getuid()) {
         char pass[128];
         fprintf(stderr, "Password: ");
         fflush(stderr);
@@ -57,9 +70,15 @@ int main(int argc, char **argv)
     setenv("HOME", pw->pw_dir, 1);
     setenv("USER", pw->pw_name, 1);
     setenv("LOGNAME", pw->pw_name, 1);
-    setenv("SHELL", pw->pw_shell && *pw->pw_shell ? pw->pw_shell : "/bin/sh", 1);
+    const char *shell = (pw->pw_shell && *pw->pw_shell) ? pw->pw_shell
+                                                        : "/bin/sh";
+    setenv("SHELL", shell, 1);
 
-    const char *shell = getenv("SHELL");
+    if (login_shell) {
+        if (chdir(pw->pw_dir) != 0) chdir("/");
+        setenv("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", 1);
+    }
+
     execl(shell, shell, (char *)NULL);
     perror("su: exec");
     return 1;

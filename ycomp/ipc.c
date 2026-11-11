@@ -35,7 +35,8 @@ static void ipc_handle(struct ycomp_server *s, int fd, char *line)
                                 v->xdg_toplevel->title : "";
             const char *app   = v->xdg_toplevel->app_id ?
                                 v->xdg_toplevel->app_id : "";
-            snprintf(buf, sizeof(buf), "%d\t%s\t%s\n", v->id, app, title);
+            snprintf(buf, sizeof(buf), "%d\t%s\t%s\t%d\n", v->id, app, title,
+                     v->id == s->focused_id ? 1 : 0);
             ipc_send_all(fd, buf);
         }
         return;
