@@ -97,4 +97,5 @@ Yet Another Independent Typical Stable Origin OS
 
 ## Лицензия
 
-Этот проект распространяется под лицензией [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+Этот проект распространяется под лицензией
+[GNU General Public License версии 2 (GPLv2)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html).
