@@ -1,3 +1,0 @@
-init: modprobe bochs: ok
-modprobe: module virtio_gpu not found in modules.dep
-init: modprobe virtio_gpu: failed (exit 1)
