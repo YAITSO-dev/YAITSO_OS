@@ -7,10 +7,13 @@
 
 #define YT_COLS_MAX     512
 #define YT_ROWS_MAX     256
-#define YT_HIST_MAX     2000
+/* История и вкладки хранятся статически внутри struct yt_session, поэтому
+ * большие значения означают сотни мегабайт RSS даже для одного окна.
+ * 4 вкладки × 1000 строк — разумный компромисс для лёгкой системы. */
+#define YT_HIST_MAX     1000
 #define YT_CELL_W       8
 #define YT_CELL_H       16
-#define YT_MAX_TABS     16
+#define YT_MAX_TABS     4
 #define YT_SEARCH_MAX   128
 
 #define YT_COLOR_FG_DEF 0xffd8dee9

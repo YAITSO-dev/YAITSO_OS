@@ -6,30 +6,58 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <pwd.h>
+#include <string.h>
+#include <errno.h>
+
+static void set_if_empty(const char *key, const char *val)
+{
+    const char *cur = getenv(key);
+    if (!cur || !*cur) setenv(key, val, 1);
+}
 
 int main(void) {
     int uid = getuid();
     char xdg_runtime[256];
     snprintf(xdg_runtime, sizeof(xdg_runtime), "/run/user/%d", uid);
     mkdir("/run/user", 0755);
-    mkdir(xdg_runtime, 0700);
+    if (mkdir(xdg_runtime, 0700) != 0 && errno != EEXIST) {
+        /* /run/user может быть недоступен для записи (старая система или
+         * нестандартный init). Используем приватный каталог в /tmp. */
+        snprintf(xdg_runtime, sizeof(xdg_runtime), "/tmp/yaitso-runtime-%d", uid);
+        mkdir(xdg_runtime, 0700);
+    }
+    chmod(xdg_runtime, 0700);
+    if (chown(xdg_runtime, (uid_t)uid, (gid_t)getgid()) != 0) {
+        /* best effort: каталог уже мог принадлежать пользователю */
+    }
+
+    struct passwd *pw = getpwuid((uid_t)uid);
+    if (pw && pw->pw_dir && *pw->pw_dir && !getenv("HOME"))
+        setenv("HOME", pw->pw_dir, 1);
 
     setenv("XDG_RUNTIME_DIR", xdg_runtime, 1);
     setenv("WAYLAND_DISPLAY", "wayland-0", 1);
     setenv("XDG_SESSION_TYPE", "wayland", 1);
     setenv("XDG_CURRENT_DESKTOP", "yaitso", 1);
     setenv("XDG_SESSION_DESKTOP", "yaitso", 1);
+    set_if_empty("XDG_DATA_DIRS", "/usr/local/share:/usr/share");
+    set_if_empty("XDG_CONFIG_HOME", "/etc/xdg");
+    set_if_empty("GDK_BACKEND", "wayland");
+    set_if_empty("QT_QPA_PLATFORM", "wayland");
+    set_if_empty("MOZ_ENABLE_WAYLAND", "1");
+    set_if_empty("SDL_VIDEODRIVER", "wayland");
 
-    // ГЛАВНОЕ: программный рендеринг и обход всех сложных проверок DRM
-    setenv("WLR_RENDERER", "pixman", 1);
-    setenv("WLR_NO_HARDWARE_CURSORS", "1", 1);
-    setenv("LIBSEAT_BACKEND", "noop", 1);
-    setenv("WLR_BACKENDS", "drm", 1);
+    // Программный рендеринг и обход сложных проверок DRM.
+    set_if_empty("WLR_RENDERER", "pixman");
+    set_if_empty("WLR_NO_HARDWARE_CURSORS", "1");
+    set_if_empty("LIBSEAT_BACKEND", "noop");
+    set_if_empty("WLR_BACKENDS", "drm");
     /* Атомарный DRM обязателен: на legacy-пути (WLR_DRM_NO_ATOMIC=1)
      * wlr_scene_output_commit() не выполняет page-flip, и экран остаётся
      * чёрным при живом композиторе и клиентах. */
     unsetenv("WLR_DRM_NO_ATOMIC");
-    setenv("WLR_DRM_NO_MODIFIERS", "1", 1);
+    set_if_empty("WLR_DRM_NO_MODIFIERS", "1");
 
     // Ищем любой /dev/dri/cardN (не только card0), ждём до 10 секунд.
     char card[64] = "";
@@ -77,10 +105,15 @@ int main(void) {
         _exit(1);
     }
 
-    /* init запускает GUI на tty1, поэтому stderr ycomp иначе теряется.
-     * Журнал помогает диагностировать проблемы с DRM/вводом. */
-    int logfd = open("/var/log/ycomp.log",
-                     O_WRONLY | O_CREAT | O_APPEND, 0644);
+    /* Журнал ycomp. /var/log доступен только root, поэтому у обычного
+     * пользователя пишем в его XDG_RUNTIME_DIR. */
+    char logpath[400];
+    snprintf(logpath, sizeof(logpath), "%s/ycomp.log", xdg_runtime);
+    int logfd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd < 0 && uid == 0) {
+        snprintf(logpath, sizeof(logpath), "/var/log/ycomp.log");
+        logfd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
     if (logfd >= 0) {
         dup2(logfd, STDOUT_FILENO);
         dup2(logfd, STDERR_FILENO);

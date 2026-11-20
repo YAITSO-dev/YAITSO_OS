@@ -225,6 +225,7 @@ static void draw_search(ywt_buf_t *b, ywt_font_t *f)
 static void render(void)
 {
     if (!g_buf || !g_font) return;
+    if (!ywt_surface_is_configured(g_surf)) return;
     struct yt_tab *t = active_tab();
     if (!t) {
         ywt_buf_clear(g_buf, YT_COLOR_BG_DEF);

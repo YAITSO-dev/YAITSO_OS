@@ -18,11 +18,47 @@ static void output_frame(struct wl_listener *l, void *data)
     if (so) wlr_scene_output_send_frame_done(so, &now);
 }
 
+/* Мягкий вертикальный градиент вместо чёрного фона. */
+static void output_bg_build(struct ycomp_output *o)
+{
+    struct ycomp_server *s = o->server;
+    struct wlr_output *out = o->wlr_output;
+    int w = out->width, h = out->height;
+    if (w <= 0 || h <= 0) return;
+
+    if (o->bg_tree) {
+        wlr_scene_node_destroy(&o->bg_tree->node);
+        o->bg_tree = NULL;
+    }
+    o->bg_tree = wlr_scene_tree_create(&s->scene->tree);
+    if (!o->bg_tree) return;
+    wlr_scene_node_lower_to_bottom(&o->bg_tree->node);
+
+    struct wlr_box box = {0};
+    wlr_output_layout_get_box(s->output_layout, out, &box);
+
+    const int bands = 32;
+    for (int i = 0; i < bands; i++) {
+        int y0 = h * i / bands;
+        int y1 = h * (i + 1) / bands;
+        int bh = y1 - y0;
+        if (bh <= 0) continue;
+        float t = bands > 1 ? (float)i / (float)(bands - 1) : 0.0f;
+        float col[4];
+        for (int c = 0; c < 4; c++)
+            col[c] = s->bg_top[c] + (s->bg_bottom[c] - s->bg_top[c]) * t;
+        struct wlr_scene_rect *r =
+            wlr_scene_rect_create(o->bg_tree, w, bh, col);
+        if (r) wlr_scene_node_set_position(&r->node, box.x, box.y + y0);
+    }
+}
+
 static void output_request_state(struct wl_listener *l, void *data)
 {
     struct ycomp_output *o = wl_container_of(l, o, request_state);
     struct wlr_output_event_request_state *ev = data;
     wlr_output_commit_state(o->wlr_output, ev->state);
+    output_bg_build(o);
 }
 
 static void output_destroy(struct wl_listener *l, void *data)
@@ -33,6 +69,8 @@ static void output_destroy(struct wl_listener *l, void *data)
     wl_list_remove(&o->request_state.link);
     wl_list_remove(&o->destroy.link);
     wl_list_remove(&o->link);
+    if (o->bg_tree)
+        wlr_scene_node_destroy(&o->bg_tree->node);
     free(o);
 }
 
@@ -69,6 +107,8 @@ void ycomp_output_new(struct wl_listener *l, void *data)
     wl_signal_add(&wlr_output->events.destroy, &o->destroy);
 
     wl_list_insert(&s->outputs, &o->link);
+
+    output_bg_build(o);
 
     /* Разбудить первый frame: без этого на DRM нет page-flip события,
      * и output_frame никогда не будет вызван. */

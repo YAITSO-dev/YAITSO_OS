@@ -56,6 +56,7 @@ ywt_ctx_t *ywt_surface_ctx(ywt_surface_t *);
 struct wl_surface *ywt_surface_wl(ywt_surface_t *);
 int  ywt_surface_width(ywt_surface_t *);
 int  ywt_surface_height(ywt_surface_t *);
+int  ywt_surface_is_configured(ywt_surface_t *);
 void ywt_surface_commit(ywt_surface_t *);
 int  ywt_surface_should_close(ywt_surface_t *);
 

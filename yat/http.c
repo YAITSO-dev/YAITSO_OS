@@ -138,7 +138,7 @@ static int build_request(char *buf, size_t n, const char *method,
     int r = snprintf(buf, n,
         "%s %s HTTP/1.1\r\n"
         "Host: %s\r\n"
-        "User-Agent: yat/0.3.2\r\n"
+        "User-Agent: yat/0.3.3\r\n"
         "Accept: */*\r\n"
         "Connection: close\r\n"
         "\r\n",

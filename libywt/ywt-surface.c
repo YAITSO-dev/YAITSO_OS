@@ -7,6 +7,7 @@ ywt_ctx_t           *ywt_surface_ctx(ywt_surface_t *s) { return s ? s->ctx : NUL
 int                  ywt_surface_width(ywt_surface_t *s)  { return s ? s->w : 0; }
 int                  ywt_surface_height(ywt_surface_t *s) { return s ? s->h : 0; }
 int                  ywt_surface_should_close(ywt_surface_t *s) { return s ? s->closed : 1; }
+int                  ywt_surface_is_configured(ywt_surface_t *s) { return s ? s->configured : 0; }
 
 static void xdg_wm_ping(void *d, struct xdg_wm_base *b, uint32_t serial)
 {
@@ -129,5 +130,10 @@ void ywt_surface_set_cb(ywt_surface_t *s, void *data,
 void ywt_surface_commit(ywt_surface_t *s)
 {
     if (!s) return;
+    /* xdg-shell запрещает прикреплять буфер к поверхности, которая ещё не
+     * получила configure. Клиенты рисуют по таймеру и могут успеть раньше,
+     * чем композитор пришлёт первый configure, поэтому до него commit
+     * пропускается: клиент повторит отрисовку из on_configure. */
+    if (!s->configured) return;
     wl_surface_commit(s->wl);
 }

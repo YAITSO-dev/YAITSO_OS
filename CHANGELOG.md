@@ -1,5 +1,90 @@
 # Changelog
 
+## [0.3.3] — 2026-11-18
+
+### Added — рабочий стол
+- ycomp: серверные заголовки окон с кнопками
+  «свернуть/развернуть/закрыть»
+- ycomp: перетаскивание окна за заголовок, изменение размера за края и углы
+- ycomp: maximize/restore, привязка к половине экрана, сворачивание и
+  восстановление, двойной щелчок по заголовку
+- ycomp: горячие клавиши `Super+Return`, `Super+D`, `Super+Q`, `Super+M`,
+  `Super+←/→`, `Super+H`, `Super+Tab`, `Alt+Tab`
+- ycomp: градиентный фон рабочего стола, настраиваемые цвета
+- ybar: кликабельные APPS и список окон, подсветка активного окна,
+  приглушение свёрнутых, дата
+- ylaunch: запуск мышью, прокрутка, PageUp/PageDown/Home/End, центрирование
+  композитором, русские подписи
+- IPC: команды `maximize`, `restore`, `toggle`, `minimize`, `unminimize`,
+  `snap`, `next`, `prev`; `list` сообщает признак скрытого окна
+
+### Added — установщик
+- installer: полностью переписан; GPT (UEFI/BIOS), parted/sfdisk,
+  mkfs.ext4/mkfs.vfat, fstab по UUID
+- installer: копирование системы на C без внешних cp/rsync, сохранение
+  прав, владельцев и символьных ссылок
+- installer: пользователь, SHA-512 хеш, блокировка root, GRUB для UEFI/BIOS,
+  резервный `BOOTX64.EFI`
+- mkiso: отдельный минимальный initramfs установленной системы (busybox +
+  драйверы накопителей) с `/init`, который монтирует корень и делает
+  `switch_root` — установленная система больше не загружается из live-initramfs
+- mkiso: модули ahci/nvme/virtio_blk/usb-storage/ext4 и зависимости
+  попадают в live-систему и в загрузочный initramfs
+- installer: `/etc/hosts`, подтверждение пароля, исправлена запись
+  `/etc/shadow` для длинных файлов
+- installer: параметры `--list`, `--disk`, `--hostname`, `--user`,
+  `--password`, `--gui/--no-gui`, `--efi/--bios`, `--yes`, `--force`
+- installer: статическая сборка, работает в минимальном live-rootfs
+- mkiso: в образ копируются parted, sfdisk, e2fsprogs, dosfstools, grub,
+  bash.real и их библиотеки
+- GRUB: пункт «Yaitso OS 0.3.3 (install)» с `yaitso.install=1`
+
+### Fixed — сессия и система
+- init: всегда запускает getty/login; после logout снова появляется login
+- login: авто­вход по `-f`/`-a`/`--autologin` и `/etc/yaitso/autologin`
+  (live, только на tty1); установленная система файл удаляет. Ограничение
+  tty1 устраняет одновременный запуск нескольких DRM-сессий и OOM
+- init: режим установщика с tty1 и возврат к login после завершения
+- start-desktop: `XDG_RUNTIME_DIR`, Wayland-переменные, ожидание сокета
+  композитора, журнал в runtime-каталоге пользователя
+- mkiso: ссылки на applet'ы busybox (cp, tar, find, grep, df, free, touch,
+  mktemp, realpath и др.)
+- mkiso: ядро и initramfs внутри live-системы, двухпроходная сборка
+  initramfs для установщика
+- bootstrap: установщик ставится как `yaitso-install`, а не перекрывает
+  `/usr/bin/install`
+
+### Fixed — рабочий стол
+- окно больше не «уезжает» и не дёргается при перетаскивании/ресайзе
+- панель не забирает клавиатурный фокус
+- ycomp отправляет первый configure панели и лаунчеру; libywt не
+  прикрепляет буфер до configure — устранено падение ybar с
+  `xdg_surface has never been configured`
+- окна не выходят за рабочую область, заголовок остаётся доступным
+- `list` в IPC не ломался на окнах без заголовка
+- IPC-сокет создаётся в `$XDG_RUNTIME_DIR` — ybar работает от обычного
+  пользователя, а не только от root
+- mkiso: копируются `libcrypt.so.1` и библиотеки getty/login/passwd/su/sudo;
+  без этого вход в систему и автовход не работали
+- init: `/run/user` создаётся с правами 1777, а `/dev/dri`, `/dev/input`,
+  `/dev/snd` получают группы video/input/render/audio — графическая сессия
+  обычного пользователя больше не падает с `Permission denied`
+- distro: стандартные группы (`video`, `input`, `render`, `audio`, `tty`)
+- installer/useradd: пользователь добавляется в `wheel,video,input,render,audio`;
+  `useradd` понимает `-s` и записывает указанную оболочку
+- installer: `grub-install` запускается напрямую, если это ELF-бинарник,
+  и через `bash.real`, если это скрипт (раньше BIOS-установка падала с
+  `cannot execute binary file`)
+- yterm: история и вкладки уменьшены до разумного статического размера
+  (4 вкладки × 1000 строк); прежние 16 × 2000 давали ~300 МБ RSS
+- ycomp: третья кнопка заголовка — «свернуть»
+
+### Changed
+- версия 0.3.3 во всех пакетах, `--version`, man-страницах и документации
+- репозиторий очищен от собранных бинарников: исполняемые файлы, `*.o`,
+  `*.a` и `gui-out/` больше не хранятся в git и пересобираются `make` /
+  `make gui`
+
 ## [0.3.2] — 2026-11-08
 
 ### Fixed — безопасность

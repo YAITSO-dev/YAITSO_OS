@@ -15,6 +15,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <sys/wait.h>
+#include <sys/statvfs.h>
 
 static int cmd_true(int argc, char **argv)  { (void)argc; (void)argv; return 0; }
 static int cmd_false(int argc, char **argv) { (void)argc; (void)argv; return 1; }
@@ -362,6 +363,172 @@ static int cmd_poweroff(int argc, char **argv)
     return 0;
 }
 
+static int cmd_touch(int argc, char **argv)
+{
+    int i = 1, no_create = 0;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (!strcmp(argv[i], "--")) { i++; break; }
+        for (const char *p = argv[i] + 1; *p; p++)
+            if (*p == 'c') no_create = 1;
+    }
+    if (i >= argc) { fprintf(stderr, "touch: missing operand\n"); return 1; }
+
+    int rc = 0;
+    struct timespec ts[2];
+    clock_gettime(CLOCK_REALTIME, &ts[0]);
+    ts[1] = ts[0];
+
+    for (; i < argc; i++) {
+        struct stat st;
+        if (no_create && stat(argv[i], &st) != 0) continue;
+        int fd = open(argv[i], O_WRONLY | O_CREAT, 0644);
+        if (fd < 0) { perror(argv[i]); rc = 1; continue; }
+        close(fd);
+        if (utimensat(AT_FDCWD, argv[i], ts, 0) != 0) {
+            perror(argv[i]);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+static int cmd_df(int argc, char **argv)
+{
+    printf("%-22s %10s %10s %10s %5s %s\n",
+           "Filesystem", "1K-blocks", "Used", "Available", "Use%", "Mounted on");
+    int first = (argc > 1) ? 1 : 0;
+    int last = (argc > 1) ? argc - 1 : 0;
+    for (int i = first; i <= last; i++) {
+        const char *p = (argc > 1) ? argv[i] : "/";
+        struct statvfs v;
+        if (statvfs(p, &v) != 0) { perror(p); continue; }
+        unsigned long long bs = v.f_frsize ? v.f_frsize : v.f_bsize;
+        unsigned long long total = (unsigned long long)v.f_blocks * bs / 1024;
+        unsigned long long freeb = (unsigned long long)v.f_bfree * bs / 1024;
+        unsigned long long avail = (unsigned long long)v.f_bavail * bs / 1024;
+        unsigned long long used = total > freeb ? total - freeb : 0;
+        int pct = total ? (int)(used * 100 / total) : 0;
+        printf("%-22s %10llu %10llu %10llu %4d%% %s\n",
+               "yaitso", total, used, avail, pct, p);
+    }
+    return 0;
+}
+
+static int cmd_free(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) { perror("/proc/meminfo"); return 1; }
+
+    unsigned long long mt = 0, mf = 0, ma = 0, mb = 0, mc = 0;
+    unsigned long long st = 0, sf = 0;
+    char key[64];
+    unsigned long long kb;
+    while (fscanf(f, "%63s %llu", key, &kb) == 2) {
+        if      (!strcmp(key, "MemTotal:"))     mt = kb;
+        else if (!strcmp(key, "MemFree:"))      mf = kb;
+        else if (!strcmp(key, "MemAvailable:")) ma = kb;
+        else if (!strcmp(key, "Buffers:"))      mb = kb;
+        else if (!strcmp(key, "Cached:"))       mc = kb;
+        else if (!strcmp(key, "SwapTotal:"))    st = kb;
+        else if (!strcmp(key, "SwapFree:"))     sf = kb;
+        /* пропускаем остаток строки */
+        int ch;
+        while ((ch = fgetc(f)) != '\n' && ch != EOF) {}
+    }
+    fclose(f);
+
+    unsigned long long cache = mb + mc;
+    unsigned long long mused = mt > mf + cache ? mt - mf - cache : mt - mf;
+    unsigned long long sused = st > sf ? st - sf : 0;
+
+    printf("%-7s %10s %10s %10s %10s %10s %10s\n",
+           "", "total", "used", "free", "shared", "buff/cache", "available");
+    printf("%-7s %10llu %10llu %10llu %10s %10llu %10llu\n", "Mem:",
+           mt / 1024, mused / 1024, mf / 1024, "-", cache / 1024, ma / 1024);
+    printf("%-7s %10llu %10llu %10llu\n", "Swap:",
+           st / 1024, sused / 1024, sf / 1024);
+    return 0;
+}
+
+static int cmd_mktemp(int argc, char **argv)
+{
+    int dir = 0, i = 1;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (!strcmp(argv[i], "--")) { i++; break; }
+        if (strchr(argv[i], 'd')) dir = 1;
+        if (strchr(argv[i], 'q')) continue;
+        if (strchr(argv[i], 'u')) {
+            fprintf(stderr, "mktemp: -u не поддерживается (небезопасно)\n");
+            return 1;
+        }
+    }
+
+    char tmpl[PATH_MAX];
+    if (i < argc) snprintf(tmpl, sizeof(tmpl), "%s", argv[i]);
+    else           snprintf(tmpl, sizeof(tmpl), "/tmp/tmp.XXXXXX");
+
+    size_t l = strlen(tmpl);
+    if (l < 6 || strcmp(tmpl + l - 6, "XXXXXX")) {
+        if (l + 8 >= sizeof(tmpl)) {
+            fprintf(stderr, "mktemp: слишком длинный шаблон\n");
+            return 1;
+        }
+        if (l && tmpl[l - 1] == '.') snprintf(tmpl + l, sizeof(tmpl) - l, "XXXXXX");
+        else                         snprintf(tmpl + l, sizeof(tmpl) - l, ".XXXXXX");
+    }
+
+    if (dir) {
+        if (!mkdtemp(tmpl)) { perror("mktemp"); return 1; }
+    } else {
+        int fd = mkstemp(tmpl);
+        if (fd < 0) { perror("mktemp"); return 1; }
+        close(fd);
+    }
+    printf("%s\n", tmpl);
+    return 0;
+}
+
+static int cmd_realpath(int argc, char **argv)
+{
+    int i = 1;
+    if (i < argc && argv[i][0] == '-' && argv[i][1]) i++;
+    if (i >= argc) { fprintf(stderr, "realpath: missing operand\n"); return 1; }
+
+    int rc = 0;
+    for (; i < argc; i++) {
+        char *r = realpath(argv[i], NULL);
+        if (!r) { perror(argv[i]); rc = 1; continue; }
+        printf("%s\n", r);
+        free(r);
+    }
+    return rc;
+}
+
+static int cmd_readlink(int argc, char **argv)
+{
+    int i = 1, canon = 0;
+    if (i < argc && !strcmp(argv[i], "-f")) { canon = 1; i++; }
+    if (i >= argc) { fprintf(stderr, "readlink: missing operand\n"); return 1; }
+
+    int rc = 0;
+    for (; i < argc; i++) {
+        if (canon) {
+            char *r = realpath(argv[i], NULL);
+            if (!r) { perror(argv[i]); rc = 1; continue; }
+            printf("%s\n", r);
+            free(r);
+        } else {
+            char buf[PATH_MAX];
+            ssize_t n = readlink(argv[i], buf, sizeof(buf) - 1);
+            if (n < 0) { perror(argv[i]); rc = 1; continue; }
+            buf[n] = 0;
+            printf("%s\n", buf);
+        }
+    }
+    return rc;
+}
+
 struct {
     const char *name;
     int (*fn)(int, char **);
@@ -384,6 +551,12 @@ struct {
     {"uptime",   cmd_uptime},
     {"reboot",   cmd_reboot},
     {"poweroff", cmd_poweroff},
+    {"touch",    cmd_touch},
+    {"df",       cmd_df},
+    {"free",     cmd_free},
+    {"mktemp",   cmd_mktemp},
+    {"realpath", cmd_realpath},
+    {"readlink", cmd_readlink},
     {NULL, NULL}
 };
 

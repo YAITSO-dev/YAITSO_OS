@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "ybar.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -5,6 +6,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/epoll.h>
+#include <linux/input-event-codes.h>
 
 static ywt_surface_t *g_surf = NULL;
 static ywt_buf_t     *g_buf = NULL;
@@ -14,35 +16,88 @@ static int            g_w = 800;
 static int            g_closing = 0;
 static int            g_dirty = 1;
 
+static int g_menu_x = 8, g_menu_w = 0;
+static int g_win_x[YBAR_MAX_WIN];
+static int g_win_w[YBAR_MAX_WIN];
+
+static void refresh_windows(void)
+{
+    if (ybar_ipc_list(&g_st) != 0) {
+        g_st.nwin = 0;
+        g_st.focus_id = -1;
+    }
+}
+
+static int draw_window_list(int x)
+{
+    for (int i = 0; i < g_st.nwin && x < g_w - 200; i++) {
+        const char *title = g_st.wins[i][0] ? g_st.wins[i] : "window";
+        int tw = ywt_text_width(g_font, title);
+        int w = tw + 18;
+        if (x + w > g_w - 180) break;
+
+        g_win_x[i] = x;
+        g_win_w[i] = w;
+
+        int active = (g_st.win_id[i] == g_st.focus_id);
+        if (active)
+            ywt_draw_rect(g_buf, x, 4, w, YBAR_HEIGHT - 8, 0xff3b4252);
+        if (g_st.win_hidden[i]) {
+            ywt_draw_text(g_buf, g_font, title, x + 9, 7, 0xff6c7a8c);
+        } else {
+            ywt_draw_text(g_buf, g_font, title, x + 9, 7,
+                          active ? 0xff88c0d0 : 0xffd8dee9);
+        }
+        x += w + 4;
+    }
+    return x;
+}
+
 static void draw(void)
 {
     if (!g_buf || !g_font) return;
-    uint32_t bg = 0xff2e3440;
+    if (!ywt_surface_is_configured(g_surf)) return;
+    uint32_t bg = 0xff242a33;
     uint32_t fg = 0xffd8dee9;
-    uint32_t accent = 0xff88c0d0;
+    uint32_t muted = 0xff8b98a8;
 
     ywt_buf_clear(g_buf, bg);
 
-    int x = 8;
-    for (int i = 0; i < g_st.nwin && x < g_w / 2; i++) {
-        uint32_t col = (i + 1 == g_st.focus_id) ? accent : fg;
-        ywt_draw_text(g_buf, g_font, g_st.wins[i], x, 4, col);
-        x += ywt_text_width(g_font, g_st.wins[i]) + 16;
+    /* Кнопка меню/запуска приложений. */
+    const char *menu = " APPS ";
+    g_menu_w = ywt_text_width(g_font, menu) + 12;
+    g_menu_x = 8;
+    ywt_draw_rect(g_buf, g_menu_x, 5, g_menu_w, YBAR_HEIGHT - 10, 0xff3b4252);
+    ywt_draw_text(g_buf, g_font, menu, g_menu_x + 6, 8, 0xff88c0d0);
+
+    draw_window_list(g_menu_x + g_menu_w + 10);
+
+    /* Правая часть: заряд, сеть, дата, часы. */
+    int xr = g_w - 8;
+    if (g_st.clock[0]) {
+        int cw = ywt_text_width(g_font, g_st.clock);
+        xr -= cw;
+        ywt_draw_text(g_buf, g_font, g_st.clock, xr, 7, fg);
+        xr -= 10;
     }
-
-    int cw = ywt_text_width(g_font, g_st.clock);
-    ywt_draw_text(g_buf, g_font, g_st.clock, g_w - cw - 8, 4, fg);
-
+    if (g_st.date[0]) {
+        int dw = ywt_text_width(g_font, g_st.date);
+        xr -= dw;
+        ywt_draw_text(g_buf, g_font, g_st.date, xr, 7, muted);
+        xr -= 14;
+    }
     if (g_st.has_battery) {
         char b[16];
         snprintf(b, sizeof(b), "%d%%", g_st.battery);
         int bw = ywt_text_width(g_font, b);
-        ywt_draw_text(g_buf, g_font, b, g_w - cw - bw - 24, 4, 0xffebcb8b);
+        xr -= bw;
+        ywt_draw_text(g_buf, g_font, b, xr, 7, 0xffebcb8b);
+        xr -= 14;
     }
-
     if (g_st.ip[0]) {
         int iw = ywt_text_width(g_font, g_st.ip);
-        ywt_draw_text(g_buf, g_font, g_st.ip, g_w - cw - iw - 72, 4, 0xffa3be8c);
+        xr -= iw;
+        ywt_draw_text(g_buf, g_font, g_st.ip, xr, 7, 0xffa3be8c);
     }
 
     struct wl_buffer *wl = ywt_buf_wl(g_buf);
@@ -50,6 +105,29 @@ static void draw(void)
     wl_surface_damage_buffer(ywt_surface_wl(g_surf), 0, 0,
                              ywt_buf_width(g_buf), ywt_buf_height(g_buf));
     ywt_surface_commit(g_surf);
+}
+
+static void on_ptr(void *data, int x, int y, uint32_t button, uint32_t state)
+{
+    (void)data; (void)y;
+    if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
+    if (button != BTN_LEFT) return;
+
+    char reply[128];
+    if (x >= g_menu_x && x < g_menu_x + g_menu_w) {
+        ybar_ipc_send("launcher", reply, sizeof(reply));
+        return;
+    }
+    for (int i = 0; i < g_st.nwin; i++) {
+        if (x >= g_win_x[i] && x < g_win_x[i] + g_win_w[i]) {
+            char cmd[64];
+            snprintf(cmd, sizeof(cmd), "focus %d", g_st.win_id[i]);
+            ybar_ipc_send(cmd, reply, sizeof(reply));
+            refresh_windows();
+            g_dirty = 1;
+            return;
+        }
+    }
 }
 
 static void on_configure(void *data, int w, int h)
@@ -78,7 +156,7 @@ int main(void)
     g_surf = ywt_surface_create(ctx, g_w, YBAR_HEIGHT, "ybar", "ybar.yaitso");
     if (!g_surf) { ywt_ctx_destroy(ctx); return 1; }
 
-    ywt_surface_set_cb(g_surf, NULL, NULL, NULL, NULL, NULL,
+    ywt_surface_set_cb(g_surf, NULL, NULL, on_ptr, NULL, NULL,
                        on_close, on_configure, NULL);
 
     g_font = ywt_font_load(
@@ -88,7 +166,7 @@ int main(void)
 
     g_buf = ywt_buf_create(g_surf, g_w, YBAR_HEIGHT);
 
-    time_t last_clock = 0, last_ip = 0, last_bat = 0, last_win = 0;
+    time_t last_clock = 0, last_ip = 0, last_win = 0;
     int ep = epoll_create1(0);
     int wl_fd = ywt_ctx_fd(ctx);
 
@@ -97,10 +175,11 @@ int main(void)
         ywt_ctx_flush(ctx);
 
         time_t now = time(NULL);
-        if (now - last_clock >= 30 || last_clock == 0) {
+        if (now - last_clock >= 10 || last_clock == 0) {
             struct tm tm;
             localtime_r(&now, &tm);
             strftime(g_st.clock, sizeof(g_st.clock), "%H:%M", &tm);
+            strftime(g_st.date, sizeof(g_st.date), "%a %d %b", &tm);
             last_clock = now;
             g_dirty = 1;
         }
@@ -109,14 +188,8 @@ int main(void)
             last_ip = now;
             g_dirty = 1;
         }
-        if (now - last_bat >= 60 || last_bat == 0) {
-            ybar_widgets_update(&g_st);
-            last_bat = now;
-            g_dirty = 1;
-        }
         if (now - last_win >= 2 || last_win == 0) {
-            g_st.nwin = ybar_ipc_list(g_st.wins, YBAR_MAX_WIN,
-                                      &g_st.focus_id);
+            refresh_windows();
             last_win = now;
             g_dirty = 1;
         }

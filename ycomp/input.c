@@ -162,16 +162,53 @@ static void keyboard_key(struct wl_listener *l, void *data)
                 handled = 1;
                 break;
             }
+            if (match_hotkey(s, sym, s->hk_maximize, s->hk_maximize_mods)) {
+                if (s->focused_id > 0)
+                    ycomp_view_toggle_maximized(s, s->focused_id);
+                handled = 1;
+                break;
+            }
+            if (match_hotkey(s, sym, s->hk_restore, s->hk_restore_mods)) {
+                if (s->focused_id > 0)
+                    ycomp_view_set_maximized(s, s->focused_id, 0);
+                handled = 1;
+                break;
+            }
+            if (match_hotkey(s, sym, s->hk_snap_left, s->hk_snap_left_mods)) {
+                if (s->focused_id > 0)
+                    ycomp_view_snap(s, s->focused_id, 0);
+                handled = 1;
+                break;
+            }
+            if (match_hotkey(s, sym, s->hk_snap_right, s->hk_snap_right_mods)) {
+                if (s->focused_id > 0)
+                    ycomp_view_snap(s, s->focused_id, 1);
+                handled = 1;
+                break;
+            }
+            if (match_hotkey(s, sym, s->hk_minimize, s->hk_minimize_mods)) {
+                if (s->focused_id > 0)
+                    ycomp_view_minimize(s, s->focused_id, 1);
+                handled = 1;
+                break;
+            }
+            if (match_hotkey(s, sym, s->hk_next, s->hk_next_mods)) {
+                ycomp_focus_next(s, 1);
+                handled = 1;
+                break;
+            }
+            if (match_hotkey(s, sym, s->hk_prev, s->hk_prev_mods)) {
+                ycomp_focus_next(s, -1);
+                handled = 1;
+                break;
+            }
             if (sym == XKB_KEY_Tab && (mods_of(s) & 2)) {
-                struct ycomp_view *v, *first = NULL;
-                int found = 0, got = 0;
-                wl_list_for_each(v, &s->views, link) {
-                    if (!v->mapped) continue;
-                    if (!first) first = v;
-                    if (found) { ycomp_focus_view(s, v->id); got = 1; break; }
-                    if (v->id == s->focused_id) found = 1;
-                }
-                if (!got && first) ycomp_focus_view(s, first->id);
+                ycomp_focus_next(s, (mods_of(s) & 8) ? -1 : 1);
+                handled = 1;
+                break;
+            }
+            if (sym == XKB_KEY_Tab && (mods_of(s) & 1)) {
+                ycomp_focus_next(s, (mods_of(s) & 8) ? -1 : 1);
                 handled = 1;
                 break;
             }
@@ -223,25 +260,67 @@ void ycomp_input_new(struct wl_listener *l, void *data)
     wlr_seat_set_capabilities(s->seat, caps);
 }
 
+/* Применяет перетаскивание/изменение размера от исходной геометрии.
+ * Так окно не «уезжает» при смене направления движения. */
+static void grab_apply(struct ycomp_server *s, double total_dx, double total_dy)
+{
+    struct ycomp_view *v = s->grab_view;
+    if (!v) return;
+
+    if (s->grab_resize) {
+        int dx = (int)total_dx;
+        int dy = (int)total_dy;
+        int nx = s->grab_view_x, ny = s->grab_view_y;
+        int nw = s->grab_view_w, nh = s->grab_view_h;
+
+        if (s->grab_edges & WLR_EDGE_LEFT) {
+            nx = s->grab_view_x + dx;
+            nw = s->grab_view_w - dx;
+        } else if (s->grab_edges & WLR_EDGE_RIGHT) {
+            nw = s->grab_view_w + dx;
+        }
+        if (s->grab_edges & WLR_EDGE_TOP) {
+            ny = s->grab_view_y + dy;
+            nh = s->grab_view_h - dy;
+        } else if (s->grab_edges & WLR_EDGE_BOTTOM) {
+            nh = s->grab_view_h + dy;
+        }
+
+        if (nw < 160) {
+            if (s->grab_edges & WLR_EDGE_LEFT)
+                nx = s->grab_view_x + s->grab_view_w - 160;
+            nw = 160;
+        }
+        if (nh < 80) {
+            if (s->grab_edges & WLR_EDGE_TOP)
+                ny = s->grab_view_y + s->grab_view_h - 80;
+            nh = 80;
+        }
+
+        v->x = nx;
+        v->y = ny;
+        v->w = nw;
+        v->h = nh;
+        wlr_xdg_toplevel_set_size(v->xdg_toplevel, nw, nh);
+    } else {
+        v->x = s->grab_view_x + (int)total_dx;
+        v->y = s->grab_view_y + (int)total_dy;
+        /* Заголовок всегда остаётся в пределах экрана по вертикали. */
+        struct wlr_box u;
+        ycomp_usable_area(s, &u);
+        if (v->y < u.y) v->y = u.y;
+        if (v->y > u.y + u.height - 30) v->y = u.y + u.height - 30;
+    }
+    ycomp_view_sync_geometry(v);
+}
+
 void ycomp_pointer_motion_delta(struct ycomp_server *s, uint32_t time_msec,
                                double dx, double dy)
 {
     if (s->grabbing && s->grab_view) {
-        if (s->grab_resize) {
-            int nw = s->grab_view_w + (int)dx;
-            int nh = s->grab_view_h + (int)dy;
-            if (nw < 80) nw = 80;
-            if (nh < 60) nh = 60;
-            s->grab_view->w = nw;
-            s->grab_view->h = nh;
-            wlr_xdg_toplevel_set_size(s->grab_view->xdg_toplevel, nw, nh);
-        } else {
-            s->grab_view->x += (int)dx;
-            s->grab_view->y += (int)dy;
-            wlr_scene_node_set_position(&s->grab_view->scene_tree->node,
-                                        s->grab_view->x, s->grab_view->y);
-        }
         wlr_cursor_move(s->cursor, NULL, dx, dy);
+        grab_apply(s, s->cursor->x - s->grab_sx,
+                   s->cursor->y - s->grab_sy);
         return;
     }
 
@@ -265,6 +344,12 @@ void ycomp_pointer_motion_abs(struct ycomp_server *s, uint32_t time_msec,
 {
     wlr_cursor_warp_absolute(s->cursor, NULL, x, y);
 
+    if (s->grabbing && s->grab_view) {
+        grab_apply(s, s->cursor->x - s->grab_sx,
+                   s->cursor->y - s->grab_sy);
+        return;
+    }
+
     double sx, sy;
     struct wlr_surface *surf = NULL;
     struct ycomp_view *v = ycomp_view_at(s, s->cursor->x, s->cursor->y,
@@ -278,6 +363,28 @@ void ycomp_pointer_motion_abs(struct ycomp_server *s, uint32_t time_msec,
     wlr_seat_pointer_notify_frame(s->seat);
 }
 
+/* Окно под курсором, если курсор у его края или угла (6 px). Позволяет
+ * менять размер обычным перетаскиванием рамки, без модификаторов. */
+static struct ycomp_view *view_edges_at(struct ycomp_server *s, double lx,
+                                        double ly, uint32_t *edges)
+{
+    struct ycomp_view *v;
+    wl_list_for_each(v, &s->views, link) {
+        if (!v->mapped || v->hidden || ycomp_view_is_bar(v)) continue;
+        if (v->titlebar_h <= 0 || v->maximized) continue;
+        int total_h = v->titlebar_h + v->h;
+        if (lx < v->x || lx >= v->x + v->w) continue;
+        if (ly < v->y || ly >= v->y + total_h) continue;
+        uint32_t e = 0;
+        if (lx < v->x + 6)                          e |= WLR_EDGE_LEFT;
+        else if (lx >= v->x + v->w - 6)             e |= WLR_EDGE_RIGHT;
+        if (ly < v->y + 6)                          e |= WLR_EDGE_TOP;
+        else if (ly >= v->y + total_h - 6)          e |= WLR_EDGE_BOTTOM;
+        if (e) { *edges = e; return v; }
+    }
+    return NULL;
+}
+
 void ycomp_pointer_button_event(struct ycomp_server *s, uint32_t time_msec,
                                 uint32_t button, uint32_t state)
 {
@@ -288,23 +395,87 @@ void ycomp_pointer_button_event(struct ycomp_server *s, uint32_t time_msec,
         return;
     }
 
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        uint32_t edges = 0;
+        struct ycomp_view *ev =
+            view_edges_at(s, s->cursor->x, s->cursor->y, &edges);
+        if (ev && button == BTN_LEFT) {
+            ycomp_focus_view(s, ev->id);
+            s->grab_view = ev;
+            s->grabbing = 1;
+            s->grab_resize = 1;
+            s->grab_edges = edges;
+            s->grab_sx = s->cursor->x;
+            s->grab_sy = s->cursor->y;
+            s->grab_view_x = ev->x;
+            s->grab_view_y = ev->y;
+            s->grab_view_w = ev->w;
+            s->grab_view_h = ev->h;
+            return;
+        }
+
+        int zone = 0;
+        struct ycomp_view *tv = ycomp_view_at_titlebar(s, s->cursor->x,
+                                                       s->cursor->y, &zone);
+        if (tv) {
+            if (zone == 1) {
+                ycomp_close_view(s, tv->id);
+            } else if (zone == 2) {
+                ycomp_view_toggle_maximized(s, tv->id);
+            } else if (zone == 3) {
+                ycomp_view_minimize(s, tv->id, 1);
+            } else {
+                ycomp_focus_view(s, tv->id);
+
+                int dbl = (s->last_click_view == tv->id &&
+                           s->last_click_button == button &&
+                           time_msec - s->last_click_ms < 400 &&
+                           s->cursor->x - s->last_click_x < 6 &&
+                           s->cursor->x - s->last_click_x > -6);
+                if (dbl) {
+                    ycomp_view_toggle_maximized(s, tv->id);
+                } else {
+                    s->grab_view = tv;
+                    s->grabbing = 1;
+                    s->grab_resize = 0;
+                    s->grab_sx = s->cursor->x;
+                    s->grab_sy = s->cursor->y;
+                    s->grab_view_x = tv->x;
+                    s->grab_view_y = tv->y;
+                    s->grab_view_w = tv->w;
+                    s->grab_view_h = tv->h;
+                }
+            }
+            s->last_click_view = tv->id;
+            s->last_click_button = button;
+            s->last_click_ms = time_msec;
+            s->last_click_x = s->cursor->x;
+            s->last_click_y = s->cursor->y;
+            return;
+        }
+    }
+
     double sx, sy;
     struct wlr_surface *surf = NULL;
     struct ycomp_view *v = ycomp_view_at(s, s->cursor->x, s->cursor->y,
                                          &surf, &sx, &sy);
 
     if (state == WL_POINTER_BUTTON_STATE_PRESSED && v) {
-        ycomp_focus_view(s, v->id);
+        /* Панель не должна забирать клавиатурный фокус. */
+        if (!ycomp_view_is_bar(v))
+            ycomp_focus_view(s, v->id);
 
         int mods = 0;
         if (s->kb_group && s->kb_group->keyboard.xkb_state) {
             if (xkb_state_mod_name_is_active(s->kb_group->keyboard.xkb_state,
                 XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0) mods = 1;
         }
-        if (mods) {
+        if (mods && !ycomp_view_is_bar(v)) {
             s->grab_view = v;
             s->grabbing = 1;
             s->grab_resize = (button == BTN_RIGHT);
+            s->grab_edges = (button == BTN_RIGHT) ? WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT
+                                                  : 0;
             s->grab_sx = s->cursor->x;
             s->grab_sy = s->cursor->y;
             s->grab_view_x = v->x;

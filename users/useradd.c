@@ -195,16 +195,22 @@ int main(int argc, char **argv)
     int create_m = 0;
     const char *group = NULL;
     const char *name = NULL;
+    const char *shell = "/bin/sh";
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-m")) create_m = 1;
         else if (!strcmp(argv[i], "-G") && i + 1 < argc) group = argv[++i];
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc) shell = argv[++i];
         else if (!name) name = argv[i];
         else { fprintf(stderr, "useradd: лишний аргумент: %s\n", argv[i]); return 2; }
     }
 
     if (!valid_name(name)) {
         fprintf(stderr, "useradd: невалидное имя\n");
+        return 1;
+    }
+    if (shell[0] != '/') {
+        fprintf(stderr, "useradd: оболочка должна быть абсолютным путём\n");
         return 1;
     }
     if (group && !valid_group_list(group)) {
@@ -241,8 +247,8 @@ int main(int argc, char **argv)
     }
 
     char pw_line[512];
-    snprintf(pw_line, sizeof(pw_line), "%s:x:%d:%d::/home/%s:/bin/sh",
-             name, uid, gid, name);
+    snprintf(pw_line, sizeof(pw_line), "%s:x:%d:%d::/home/%s:%s",
+             name, uid, gid, name, shell);
     if (append_line("/etc/passwd", pw_line) != 0) {
         perror("/etc/passwd");
         return 1;

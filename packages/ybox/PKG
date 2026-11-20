@@ -1,5 +1,5 @@
 NAME=ybox
-VERSION=0.3.2
+VERSION=0.3.3
 ARCH=x86_64
 DESC="Coreutils Yaitso OS"
 DEPENDS=base
@@ -7,7 +7,7 @@ BUILD_SYSTEM=copy
 BUILD='
 mkdir -p "$STAGE/usr/bin"
 install -m 755 "$DIST_DIR/ybox/ybox" "$STAGE/usr/bin/ybox"
-for c in true false yes basename dirname mkdir rmdir rm cp mv ln chmod chown sync hostname uptime reboot poweroff; do
+for c in true false yes basename dirname mkdir rmdir rm cp mv ln chmod chown sync hostname uptime reboot poweroff touch df free mktemp realpath readlink; do
     ln -sf ybox "$STAGE/usr/bin/$c"
 done
 '

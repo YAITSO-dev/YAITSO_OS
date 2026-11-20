@@ -1,8 +1,8 @@
 NAME=yaitso-control
-VERSION=0.3.2
+VERSION=0.3.3
 ARCH=x86_64
 DESC="Панель управления Yaitso OS"
-DEPENDS=base ytui
+DEPENDS="base ytui"
 BUILD_SYSTEM=copy
 BUILD='
 mkdir -p "$STAGE/usr/bin"

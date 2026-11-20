@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -19,12 +20,15 @@ static char *trim(char *s)
 
 static xkb_keysym_t parse_sym(const char *s)
 {
-    if (!strcmp(s, "Return") || !strcmp(s, "Enter")) return XKB_KEY_Return;
-    if (!strcmp(s, "Escape"))    return XKB_KEY_Escape;
-    if (!strcmp(s, "Tab"))       return XKB_KEY_Tab;
-    if (!strcmp(s, "Space"))     return XKB_KEY_space;
     if (!strcmp(s, "Q"))         return XKB_KEY_q;
     if (!strcmp(s, "D"))         return XKB_KEY_d;
+    if (!strcmp(s, "M"))         return XKB_KEY_m;
+    if (!strcmp(s, "H"))         return XKB_KEY_h;
+    if (!strcmp(s, "F"))         return XKB_KEY_f;
+    if (!strcmp(s, "Left"))      return XKB_KEY_Left;
+    if (!strcmp(s, "Right"))     return XKB_KEY_Right;
+    if (!strcmp(s, "Up"))        return XKB_KEY_Up;
+    if (!strcmp(s, "Down"))      return XKB_KEY_Down;
     return xkb_keysym_from_name(s, XKB_KEYSYM_CASE_INSENSITIVE);
 }
 
@@ -50,12 +54,53 @@ static void parse_hotkey(const char *val, xkb_keysym_t *sym, int *mods)
     }
 }
 
+/* #rrggbb или #rrggbbaa. */
+static int parse_color(const char *v, float out[4])
+{
+    if (!v || *v != '#') return -1;
+    v++;
+    size_t n = strlen(v);
+    if (n != 6 && n != 8) return -1;
+    unsigned int c[4] = {0, 0, 0, 255};
+    for (size_t i = 0; i < n / 2; i++) {
+        unsigned int b = 0;
+        for (int k = 0; k < 2; k++) {
+            char ch = v[i * 2 + (size_t)k];
+            int d;
+            if (ch >= '0' && ch <= '9') d = ch - '0';
+            else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
+            else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
+            else return -1;
+            b = b * 16 + (unsigned int)d;
+        }
+        c[i] = b;
+    }
+    out[0] = (float)c[0] / 255.0f;
+    out[1] = (float)c[1] / 255.0f;
+    out[2] = (float)c[2] / 255.0f;
+    out[3] = (float)c[3] / 255.0f;
+    return 0;
+}
+
 void ycomp_config_load(struct ycomp_server *s)
 {
     s->hk_terminal = XKB_KEY_Return; s->hk_terminal_mods = 1;
     s->hk_launcher = XKB_KEY_d;      s->hk_launcher_mods = 1;
     s->hk_close    = XKB_KEY_q;      s->hk_close_mods    = 1;
     s->hk_exit     = XKB_KEY_q;      s->hk_exit_mods     = 1 | 8;
+    s->hk_maximize = XKB_KEY_m;      s->hk_maximize_mods = 1;
+    s->hk_restore  = XKB_KEY_Down;   s->hk_restore_mods  = 1;
+    s->hk_snap_left = XKB_KEY_Left;  s->hk_snap_left_mods = 1;
+    s->hk_snap_right = XKB_KEY_Right; s->hk_snap_right_mods = 1;
+    s->hk_minimize = XKB_KEY_h;      s->hk_minimize_mods = 1;
+    s->hk_next     = XKB_KEY_Tab;    s->hk_next_mods     = 1;
+    s->hk_prev     = XKB_KEY_Tab;    s->hk_prev_mods     = 1 | 8;
+    s->bar_height  = YCOMP_BAR_DEF;
+
+    s->bg_top[0] = 0.06f; s->bg_top[1] = 0.08f; s->bg_top[2] = 0.11f;
+    s->bg_top[3] = 1.0f;
+    s->bg_bottom[0] = 0.14f; s->bg_bottom[1] = 0.18f;
+    s->bg_bottom[2] = 0.23f; s->bg_bottom[3] = 1.0f;
 
     FILE *f = fopen("/etc/yaitso/desktop.conf", "r");
     if (!f) return;
@@ -80,6 +125,27 @@ void ycomp_config_load(struct ycomp_server *s)
             parse_hotkey(v, &s->hk_close, &s->hk_close_mods);
         } else if (!strcmp(k, "hk_exit")) {
             parse_hotkey(v, &s->hk_exit, &s->hk_exit_mods);
+        } else if (!strcmp(k, "hk_maximize")) {
+            parse_hotkey(v, &s->hk_maximize, &s->hk_maximize_mods);
+        } else if (!strcmp(k, "hk_restore")) {
+            parse_hotkey(v, &s->hk_restore, &s->hk_restore_mods);
+        } else if (!strcmp(k, "hk_snap_left")) {
+            parse_hotkey(v, &s->hk_snap_left, &s->hk_snap_left_mods);
+        } else if (!strcmp(k, "hk_snap_right")) {
+            parse_hotkey(v, &s->hk_snap_right, &s->hk_snap_right_mods);
+        } else if (!strcmp(k, "hk_minimize")) {
+            parse_hotkey(v, &s->hk_minimize, &s->hk_minimize_mods);
+        } else if (!strcmp(k, "hk_next")) {
+            parse_hotkey(v, &s->hk_next, &s->hk_next_mods);
+        } else if (!strcmp(k, "hk_prev")) {
+            parse_hotkey(v, &s->hk_prev, &s->hk_prev_mods);
+        } else if (!strcmp(k, "bar_height")) {
+            int h = atoi(v);
+            if (h >= 16 && h <= 96) s->bar_height = h;
+        } else if (!strcmp(k, "background")) {
+            (void)parse_color(v, s->bg_top);
+        } else if (!strcmp(k, "background_bottom")) {
+            (void)parse_color(v, s->bg_bottom);
         }
     }
     fclose(f);

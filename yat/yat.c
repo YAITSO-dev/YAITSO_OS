@@ -799,7 +799,7 @@ static int cmd_rollback(int argc, char **argv)
 static void usage(void)
 {
     fprintf(stderr,
-        "yat 0.3.2 — пакетный менеджер Yaitso OS\n"
+        "yat 0.3.3 — пакетный менеджер Yaitso OS\n"
         "usage: yat <command> [args]\n"
         "  install <pkg>...   — установить\n"
         "  remove <pkg>...    — удалить\n"

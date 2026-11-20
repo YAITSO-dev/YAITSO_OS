@@ -96,7 +96,7 @@ static void record_fail(const char *user)
 
     int cnt = 0;
     FILE *f = fopen(path, "r");
-    if (f) { fscanf(f, "%d", &cnt); fclose(f); }
+    if (f) { if (fscanf(f, "%d", &cnt) != 1) cnt = 0; fclose(f); }
     cnt++;
 
     f = fopen(path, "w");
@@ -135,7 +135,8 @@ static void read_pass(char *buf, size_t n)
     tcsetattr(0, TCSAFLUSH, &new);
     read_line(buf, n);
     tcsetattr(0, TCSAFLUSH, &old);
-    write(1, "\n", 1);
+    ssize_t wr = write(1, "\n", 1);
+    (void)wr;
 }
 
 static int tty_ok(void)
@@ -157,10 +158,36 @@ static void reset_signals(void)
     signal(SIGTERM, SIG_DFL);
 }
 
+/* Автоматический вход: -f user, -a user или /etc/yaitso/autologin.
+ * Используется live-образом; установленная система этот файл не содержит. */
+static int autologin_user(char *out, size_t n)
+{
+    /* Автовход из файла — только на tty1. Иначе все getty (tty1-tty4)
+     * одновременно стартуют графическую сессию, делят DRM и порождают
+     * лавину перезапусков. Явные -f/-a остаются без ограничения. */
+    const char *tty = ttyname(STDIN_FILENO);
+    if (!tty || strcmp(tty, "/dev/tty1") != 0) return 0;
+
+    const char *file = "/etc/yaitso/autologin";
+    FILE *f = fopen(file, "r");
+    if (!f) return 0;
+    char line[64] = "";
+    int ok = 0;
+    if (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p && valid_user(p)) {
+            snprintf(out, n, "%s", p);
+            ok = 1;
+        }
+    }
+    fclose(f);
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-
     if (!tty_ok()) {
         fprintf(stderr, "login: tty owner check failed\n");
         return 1;
@@ -171,10 +198,34 @@ int main(int argc, char **argv)
     char host[64] = "yaitso";
     gethostname(host, sizeof(host) - 1);
 
-    for (int attempt = 0; attempt < MAX_TRIES; attempt++) {
+    char auto_name[64] = "";
+    for (int i = 1; i < argc; i++) {
+        if ((!strcmp(argv[i], "-f") || !strcmp(argv[i], "-a") ||
+             !strcmp(argv[i], "--autologin")) && i + 1 < argc) {
+            if (valid_user(argv[i + 1]))
+                snprintf(auto_name, sizeof(auto_name), "%s", argv[++i]);
+        }
+    }
+    if (!auto_name[0])
+        autologin_user(auto_name, sizeof(auto_name));
+
+    struct passwd *auto_pw = auto_name[0] ? getpwnam(auto_name) : NULL;
+    if (auto_pw && check_ban(auto_pw->pw_name))
+        auto_pw = NULL;
+    if (auto_pw && nologin_exists() && strcmp(auto_pw->pw_name, "root") != 0)
+        auto_pw = NULL;
+
+    char user[64] = "";
+    int authenticated = 0;
+
+    if (auto_pw) {
+        snprintf(user, sizeof(user), "%s", auto_pw->pw_name);
+        authenticated = 1;
+    }
+
+    for (int attempt = 0; !authenticated && attempt < MAX_TRIES; attempt++) {
         printf("%s login: ", host);
         fflush(stdout);
-        char user[64];
         read_line(user, sizeof(user));
         if (!user[0]) continue;
         if (!valid_user(user) || !getpwnam(user)) {
@@ -214,31 +265,36 @@ int main(int argc, char **argv)
         }
 
         clear_fail(user);
-
-        struct passwd *pw = getpwnam(user);
-        if (!pw) return 1;
-
-        char *shell = (pw->pw_shell && *pw->pw_shell) ? pw->pw_shell
-                                                     : "/bin/sh";
-
-        if (setgid(pw->pw_gid) != 0) return 1;
-        if (initgroups(pw->pw_name, pw->pw_gid) != 0) return 1;
-        if (setuid(pw->pw_uid) != 0) return 1;
-
-        setenv("HOME", pw->pw_dir, 1);
-        setenv("USER", pw->pw_name, 1);
-        setenv("LOGNAME", pw->pw_name, 1);
-        setenv("SHELL", shell, 1);
-        setenv("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", 1);
-        setenv("TERM", "linux", 0);
-
-        if (is_desktop_session()) {
-            execl("/usr/bin/start-desktop", "start-desktop", (char *)NULL);
-        }
-        execl(shell, shell, (char *)NULL);
-        perror("login: exec");
-        return 1;
+        authenticated = 1;
     }
 
+    if (!authenticated) return 1;
+
+    struct passwd *pw = getpwnam(user);
+    if (!pw) return 1;
+
+    char *shell = (pw->pw_shell && *pw->pw_shell) ? pw->pw_shell : "/bin/sh";
+
+    if (setgid(pw->pw_gid) != 0) return 1;
+    if (initgroups(pw->pw_name, pw->pw_gid) != 0) return 1;
+    if (setuid(pw->pw_uid) != 0) return 1;
+
+    setenv("HOME", pw->pw_dir, 1);
+    setenv("USER", pw->pw_name, 1);
+    setenv("LOGNAME", pw->pw_name, 1);
+    setenv("SHELL", shell, 1);
+    setenv("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", 1);
+    setenv("TERM", "linux", 0);
+
+    int chdir_rc = chdir(pw->pw_dir);
+    if (chdir_rc != 0) chdir_rc = chdir("/");
+    (void)chdir_rc;
+    umask(022);
+
+    if (is_desktop_session()) {
+        execl("/usr/bin/start-desktop", "start-desktop", (char *)NULL);
+    }
+    execl(shell, shell, (char *)NULL);
+    perror("login: exec");
     return 1;
 }

@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <pwd.h>
 #include <sys/wait.h>
+#include <termios.h>
 
 int builtin_help(struct yaitso_ctx *c, int argc, char **argv)
 {
@@ -869,9 +870,18 @@ int builtin_read(struct yaitso_ctx *c, int argc, char **argv)
     if (prompt) { fputs(prompt, stdout); fflush(stdout); }
 
     char buf[4096];
-    if (!fgets(buf, sizeof(buf), stdin)) return 1;
-    buf[strcspn(buf, "\r\n")] = 0;
+    struct termios old, noecho;
+    int tty = silent && isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &old) == 0;
+    if (tty) {
+        noecho = old;
+        noecho.c_lflag &= ~(tcflag_t)ECHO;
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &noecho);
+    }
+    int got = fgets(buf, sizeof(buf), stdin) != NULL;
+    if (tty) tcsetattr(STDIN_FILENO, TCSAFLUSH, &old);
     if (silent) putchar('\n');
+    if (!got) return 1;
+    buf[strcspn(buf, "\r\n")] = 0;
     env_set(c, argv[i], buf);
     return 0;
 }

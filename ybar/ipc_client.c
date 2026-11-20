@@ -47,7 +47,11 @@ int ybar_ipc_send(const char *cmd, char *reply, size_t rn)
     struct sockaddr_un a;
     memset(&a, 0, sizeof(a));
     a.sun_family = AF_UNIX;
-    snprintf(a.sun_path, sizeof(a.sun_path), "/run/ycomp.sock");
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (rt && *rt)
+        snprintf(a.sun_path, sizeof(a.sun_path), "%s/ycomp.sock", rt);
+    else
+        snprintf(a.sun_path, sizeof(a.sun_path), "/run/ycomp.sock");
 
     if (connect_timeout(fd, (struct sockaddr *)&a, sizeof(a),
                         YBAR_IPC_TIMEOUT_MS) != 0) {
@@ -72,33 +76,38 @@ int ybar_ipc_send(const char *cmd, char *reply, size_t rn)
     return 0;
 }
 
-int ybar_ipc_list(char wins[][96], int max, int *focus_id)
+int ybar_ipc_list(struct ybar_state *s)
 {
-    if (focus_id) *focus_id = -1;
+    s->nwin = 0;
+    s->focus_id = -1;
     char buf[8192];
-    if (ybar_ipc_send("list", buf, sizeof(buf)) != 0) return 0;
-    int n = 0;
+    if (ybar_ipc_send("list", buf, sizeof(buf)) != 0) return -1;
     char *p = buf;
-    while (*p && n < max) {
+    while (*p && s->nwin < YBAR_MAX_WIN) {
         char *eol = strchr(p, '\n');
         if (!eol) break;
         *eol = 0;
-        char *t1 = strchr(p, '\t');
-        if (t1) {
-            char *t2 = strchr(t1 + 1, '\t');
-            if (t2) {
-                int id = atoi(p);
-                char *title = t2 + 1;
-                char *t3 = strchr(title, '\t');
-                if (t3) {
-                    *t3 = 0;
-                    if (focus_id && atoi(t3 + 1) == 1) *focus_id = id;
-                }
-                snprintf(wins[n], 96, "%s", title);
-                n++;
-            }
+        char *fields[5] = {0};
+        int nf = 0;
+        char *q = p;
+        while (nf < 5) {
+            fields[nf++] = q;
+            char *tab = strchr(q, '\t');
+            if (!tab) break;
+            *tab = 0;
+            q = tab + 1;
+        }
+        if (nf >= 3) {
+            int idx = s->nwin;
+            int id = atoi(fields[0]);
+            s->win_id[idx] = id;
+            snprintf(s->wins[idx], sizeof(s->wins[idx]), "%s",
+                     fields[2][0] ? fields[2] : fields[1]);
+            s->win_hidden[idx] = (nf >= 5) ? atoi(fields[4]) : 0;
+            if (nf >= 4 && atoi(fields[3]) == 1) s->focus_id = id;
+            s->nwin++;
         }
         p = eol + 1;
     }
-    return n;
+    return 0;
 }

@@ -1,4 +1,4 @@
-# Yaitso OS 0.3.2 — безопасность
+# Yaitso OS 0.3.3 — безопасность
 
 ## HTTPS в yat
 
@@ -22,7 +22,7 @@
 
 ## IPC ycomp
 
-- UNIX-сокет `/run/ycomp.sock`, права 0600
+- UNIX-сокет `$XDG_RUNTIME_DIR/ycomp.sock`, права 0600
 - Проверка `SO_PEERCRED`: uid владельца или root
 - Отказ в обслуживании чужих uid
 

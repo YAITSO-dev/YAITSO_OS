@@ -1,7 +1,7 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra   -std=c11 -O2 -Iinclude \
           -D_POSIX_C_SOURCE=200809L \
-          -DYAITSO_VERSION='"0.3.2"'
+          -DYAITSO_VERSION='"0.3.3"'
 TARGET  = yaitso
 SRC     = src/main.c src/commands.c src/builtin.c src/util.c \
           src/history.c src/utf8.c src/config.c src/shell.c \
@@ -9,7 +9,7 @@ SRC     = src/main.c src/commands.c src/builtin.c src/util.c \
           src/suggest.c src/posargs.c src/expand.c src/env.c
 OBJ     = $(SRC:.c=.o)
 
-ISO     = yaitso-0.3.2.iso
+ISO     = yaitso-0.3.3.iso
 
 .NOTPARALLEL:
 

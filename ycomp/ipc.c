@@ -30,13 +30,13 @@ static void ipc_handle(struct ycomp_server *s, int fd, char *line)
         struct ycomp_view *v;
         char buf[512];
         wl_list_for_each(v, &s->views, link) {
-            if (!v->mapped) continue;
+            if (!v->mapped || ycomp_view_is_bar(v)) continue;
             const char *title = v->xdg_toplevel->title ?
                                 v->xdg_toplevel->title : "";
             const char *app   = v->xdg_toplevel->app_id ?
                                 v->xdg_toplevel->app_id : "";
-            snprintf(buf, sizeof(buf), "%d\t%s\t%s\t%d\n", v->id, app, title,
-                     v->id == s->focused_id ? 1 : 0);
+            snprintf(buf, sizeof(buf), "%d\t%s\t%s\t%d\t%d\n", v->id, app,
+                     title, v->id == s->focused_id ? 1 : 0, v->hidden ? 1 : 0);
             ipc_send_all(fd, buf);
         }
         return;
@@ -50,6 +50,57 @@ static void ipc_handle(struct ycomp_server *s, int fd, char *line)
     if (!strncmp(line, "close ", 6)) {
         int id = atoi(line + 6);
         ycomp_close_view(s, id);
+        ipc_send_all(fd, "ok\n");
+        return;
+    }
+    if (!strncmp(line, "maximize ", 9)) {
+        int id = atoi(line + 9);
+        ycomp_view_set_maximized(s, id, 1);
+        ipc_send_all(fd, "ok\n");
+        return;
+    }
+    if (!strncmp(line, "restore ", 8)) {
+        int id = atoi(line + 8);
+        ycomp_view_set_maximized(s, id, 0);
+        ipc_send_all(fd, "ok\n");
+        return;
+    }
+    if (!strncmp(line, "toggle ", 7)) {
+        int id = atoi(line + 7);
+        ycomp_view_toggle_maximized(s, id);
+        ipc_send_all(fd, "ok\n");
+        return;
+    }
+    if (!strncmp(line, "minimize ", 9)) {
+        int id = atoi(line + 9);
+        ycomp_view_minimize(s, id, 1);
+        ipc_send_all(fd, "ok\n");
+        return;
+    }
+    if (!strncmp(line, "unminimize ", 11)) {
+        int id = atoi(line + 11);
+        ycomp_view_minimize(s, id, 0);
+        ipc_send_all(fd, "ok\n");
+        return;
+    }
+    if (!strncmp(line, "snap ", 5)) {
+        int id = 0;
+        char side[16] = "";
+        if (sscanf(line + 5, "%d %15s", &id, side) == 2) {
+            ycomp_view_snap(s, id, !strcmp(side, "right") ? 1 : 0);
+            ipc_send_all(fd, "ok\n");
+        } else {
+            ipc_send_all(fd, "err\n");
+        }
+        return;
+    }
+    if (!strcmp(line, "next")) {
+        ycomp_focus_next(s, 1);
+        ipc_send_all(fd, "ok\n");
+        return;
+    }
+    if (!strcmp(line, "prev")) {
+        ycomp_focus_next(s, -1);
         ipc_send_all(fd, "ok\n");
         return;
     }
@@ -115,24 +166,41 @@ static int ipc_accept(int fd, uint32_t mask, void *data)
     return 0;
 }
 
+static const char *ipc_socket_path(void)
+{
+    static char path[320];
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (rt && *rt)
+        snprintf(path, sizeof(path), "%s/ycomp.sock", rt);
+    else
+        snprintf(path, sizeof(path), "%s", YCOMP_SOCKET);
+    return path;
+}
+
 int ycomp_ipc_init(struct ycomp_server *s)
 {
-    unlink(YCOMP_SOCKET);
+    const char *sockpath = ipc_socket_path();
+    unlink(sockpath);
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
 
     struct sockaddr_un a;
     memset(&a, 0, sizeof(a));
     a.sun_family = AF_UNIX;
-    snprintf(a.sun_path, sizeof(a.sun_path), "%s", YCOMP_SOCKET);
+    snprintf(a.sun_path, sizeof(a.sun_path), "%s", sockpath);
 
     if (bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
+        fprintf(stderr, "ycomp: ipc bind %s: %s\n", sockpath, strerror(errno));
         close(fd);
         return -1;
     }
-    chmod(YCOMP_SOCKET, 0600);
+    chmod(sockpath, 0600);
 
-    if (listen(fd, 16) < 0) { close(fd); return -1; }
+    if (listen(fd, 16) < 0) {
+        fprintf(stderr, "ycomp: ipc listen %s: %s\n", sockpath, strerror(errno));
+        close(fd);
+        return -1;
+    }
 
     s->ipc_fd = fd;
     s->ipc_source = wl_event_loop_add_fd(s->event_loop, fd,
@@ -145,5 +213,5 @@ void ycomp_ipc_fini(struct ycomp_server *s)
 {
     if (s->ipc_source) wl_event_source_remove(s->ipc_source);
     if (s->ipc_fd >= 0) close(s->ipc_fd);
-    unlink(YCOMP_SOCKET);
+    unlink(ipc_socket_path());
 }
