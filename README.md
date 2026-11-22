@@ -1,33 +1,33 @@
-# Yaitso OS 0.3.3
+# Yaitso OS 0.3.31
 
 **Lightweight independent Linux distribution with a custom Wayland compositor, shell, and package manager.**
 
 **Русская версия:** [README_RU.md](README_RU.md)
 
-![Yaitso OS 0.3.3 desktop with the ybar top panel and the yterm terminal](assets/yaitso-0.3.3-desktop.png)
+![Yaitso OS 0.3.31 desktop with the ybar top panel and the yterm terminal](assets/yaitso-0.3.31-desktop.png)
 
 ## Download and quick start
 
 The latest ISO image is attached to the
-[Yaitso_0.3.3 release](https://github.com/YAITSO-dev/YAITSO_OS/releases/download/Yaitso_0.3.3/yaitso-0.3.3.iso).
+[Yaitso_0.3.31 release](https://github.com/YAITSO-dev/YAITSO_OS/releases/download/Yaitso_0.3.31/yaitso-0.3.31.iso).
 
 Boot it in QEMU without installing:
 
 ```sh
-qemu-system-x86_64 -m 2048 -smp 2 -cdrom yaitso-0.3.3.iso -boot d -vga std
+qemu-system-x86_64 -m 2048 -smp 2 -cdrom yaitso-0.3.31.iso -boot d -vga std
 ```
 
 If `/dev/kvm` is available, add `-enable-kvm -cpu host` for near-native speed.
 On a Linux host you can also use the helper script:
 
 ```sh
-./run-qemu.sh yaitso-0.3.3.iso          # BIOS
-./run-qemu.sh yaitso-0.3.3.iso uefi     # UEFI
+./run-qemu.sh yaitso-0.3.31.iso          # BIOS
+./run-qemu.sh yaitso-0.3.31.iso uefi     # UEFI
 ```
 
 The live image starts the graphical session automatically: `ycomp` brings up
 the compositor, `ybar` appears at the top of the screen, and `yterm` opens a
-shell. To install, choose **Yaitso OS 0.3.3 (install)** in the GRUB menu or run
+shell. To install, choose **Yaitso OS 0.3.31 (install)** in the GRUB menu or run
 `yaitso-install`; the installer formats the target disk and sets up the
 bootloader, user account, and graphical session.
 
@@ -116,6 +116,9 @@ distribution's own libc.
 
 - x86_64 Linux host
 - GCC, GNU Make, pkg-config
+- Rust toolchain (Cargo) for the `yat` package manager
+- network on the first build, or run `make -C yat vendor` once to fetch
+  the crates; after that `yat` builds offline with `--frozen`
 - Wayland, wayland-protocols, libdrm, libinput, libxkbcommon
 - pixman, wlroots >= 0.18, FreeType 2, OpenSSL
 - Meson and Ninja for wlroots/glibc components
@@ -134,7 +137,7 @@ make test               # smoke and shell tests
 make check              # build everything and run tests
 
 make repo repo-sign     # build and sign packages
-sudo make iso-gui       # create yaitso-0.3.3.iso
+sudo make iso-gui       # create yaitso-0.3.31.iso
 make qemu-gui           # boot the ISO in QEMU (VNC on :1)
 ```
 
@@ -143,7 +146,7 @@ stored in the repository; `make` and `make gui` regenerate them.
 
 ### Installing to disk
 
-Boot the ISO, choose **Yaitso OS 0.3.3 (install)** in GRUB, and follow the
+Boot the ISO, choose **Yaitso OS 0.3.31 (install)** in GRUB, and follow the
 prompts. The installer can also be driven non-interactively:
 
 ```sh
@@ -163,6 +166,23 @@ selected firmware.
 - GUI: Wayland only, no XWayland
 - VT100: no Sixel or mouse reporting
 - The graphical session requires a DRM/KMS device
+
+## Changelog 0.3.31
+
+Yaitso OS 0.3.31 replaces the C `yat` with a Rust implementation and hardens
+package installation. The desktop is unchanged from 0.3.3.
+
+### yat
+
+- Rewritten in Rust (`ed25519-dalek`), including `yat-keygen` and `yat-sign`
+- Safe archive extraction, symlink/hardlink handling, dependency cycle
+  protection, and validation of package names and versions
+- Numeric version comparison, `PIN` support, and `upgrade` that only installs
+  genuinely newer versions and removes obsolete files
+- Signed package/index verification, atomic `yat update`, and rollback that
+  restores files, symlinks, and package metadata
+- Preserved `search`, `why`, `graph`, `pin`, `rollback`, and `verify`
+- Cargo build integration, offline vendoring, and 9 regression tests
 
 ## Changelog 0.3.3
 

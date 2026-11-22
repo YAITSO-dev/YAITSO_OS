@@ -1,5 +1,5 @@
 NAME=svc
-VERSION=0.3.3
+VERSION=0.3.31
 ARCH=x86_64
 DESC="Сервис-менеджер Yaitso OS"
 DEPENDS=base

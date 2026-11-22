@@ -1,8 +1,24 @@
-# Yaitso OS 0.3.3
+# Yaitso OS 0.3.31
 
 Yet Another Independent Typical Stable Origin OS
 
 **English version:** [README.md](README.md)
+
+## Что нового в 0.3.31
+
+Версия 0.3.31 заменяет C-`yat` на реализацию на Rust и делает установку
+пакетов безопаснее. Рабочий стол не изменился по сравнению с 0.3.3.
+
+### yat
+- переписан на Rust (`ed25519-dalek`), включая `yat-keygen` и `yat-sign`
+- безопасная распаковка, симлинки и hardlink'и, защита от циклов
+  зависимостей, проверка имён и версий пакетов
+- числовое сравнение версий, `PIN`, `upgrade` только на реально новые
+  версии с удалением устаревших файлов
+- проверка подписей пакета и индекса, атомарный `yat update`, откат,
+  восстанавливающий файлы, симлинки и метаданные пакета
+- сохранены `search`, `why`, `graph`, `pin`, `rollback`, `verify`
+- сборка через Cargo, офлайн-вендоринг и 9 регрессионных тестов
 
 ## Что нового в 0.3.3
 
@@ -144,7 +160,11 @@ Yet Another Independent Typical Stable Origin OS
 ## Требования хоста
 
     wayland, wayland-protocols, libdrm, libinput, libxkbcommon,
-    pixman, wlroots (>= 0.18), freetype2, openssl, meson, ninja
+    pixman, wlroots (>= 0.18), freetype2, openssl, meson, ninja,
+    rustc и cargo (для пакетного менеджера yat)
+
+Перед первой сборкой `yat` нужен интернет — зависимости скачиваются
+один раз командой `make -C yat vendor`; дальше сборка идёт офлайн.
 
 ## Известные ограничения
 

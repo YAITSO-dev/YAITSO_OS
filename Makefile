@@ -1,7 +1,7 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra   -std=c11 -O2 -Iinclude \
           -D_POSIX_C_SOURCE=200809L \
-          -DYAITSO_VERSION='"0.3.3"'
+          -DYAITSO_VERSION='"0.3.31"'
 TARGET  = yaitso
 SRC     = src/main.c src/commands.c src/builtin.c src/util.c \
           src/history.c src/utf8.c src/config.c src/shell.c \
@@ -9,7 +9,7 @@ SRC     = src/main.c src/commands.c src/builtin.c src/util.c \
           src/suggest.c src/posargs.c src/expand.c src/env.c
 OBJ     = $(SRC:.c=.o)
 
-ISO     = yaitso-0.3.3.iso
+ISO     = yaitso-0.3.31.iso
 
 .NOTPARALLEL:
 
@@ -144,10 +144,13 @@ test: $(TARGET)
 	@sh tests/smoke.sh
 	@sh tests/shell.sh
 
+test-yat:
+	$(MAKE) -C yat test
+
 test-glibc: tools
 	@sh tests/glibc.sh
 
-check: all test
+check: all test test-yat
 	@echo "check: OK"
 
 debug: CFLAGS += -g -O0 -fsanitize=address,undefined
@@ -155,14 +158,15 @@ debug: clean
 debug: $(TARGET)
 
 format:
-	-clang-format -i include/*.h src/*.c yat/*.c yhttpd/*.c ybox/*.c \
+	-clang-format -i include/*.h src/*.c yhttpd/*.c ybox/*.c \
 		init/*.c login/*.c users/*.c installer/*.c net/*.c svc/*.c \
 		ytui/*.c yaitso-control/*.c lib/*.c tools/*.c \
 		libywt/*.c ycomp/*.c yterm/*.c ybar/*.c ylaunch/*.c
+	-$(MAKE) -C yat fmt
 
 analyze:
 	-cppcheck --enable=warning,performance --error-exitcode=1 --inline-suppr \
-		-Iinclude -Ilibywt src/ ybox/ yat/ yhttpd/ init/ svc/ login/ \
+		-Iinclude -Ilibywt src/ ybox/ yhttpd/ init/ svc/ login/ \
 		users/ installer/ net/ ytui/ yaitso-control/ lib/ tools/ \
 		libywt/ ycomp/ yterm/ ybar/ ylaunch/
 
@@ -200,3 +204,7 @@ clean-iso:
 clean-all: clean clean-repo clean-glibc clean-iso
 
 .PHONY: all gui tools yat yhttpd init svc getty users installer ybox net ytui yctl \
+        libywt ycomp yterm ybar ylaunch glibc glibc-libs glibc-all repo repo-gui \
+        repo-full repo-sign repo-serve repo-sync iso iso-gui iso-full qemu qemu-uefi \
+        qemu-gui run test test-yat test-glibc check debug format analyze clean \
+        clean-repo clean-glibc clean-iso clean-all

@@ -1,5 +1,5 @@
 NAME=libuser
-VERSION=0.3.3
+VERSION=0.3.31
 ARCH=x86_64
 DESC="Библиотека PBKDF2/ChaCha для Yaitso"
 DEPENDS=base

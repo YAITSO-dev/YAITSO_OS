@@ -1,14 +1,21 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "ycomp.h"
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <poll.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+
+#define IPC_MAX_LINE   4096
+#define IPC_TIMEOUT_MS 2000
 
 static void ipc_send_all(int fd, const char *s)
 {
@@ -19,6 +26,38 @@ static void ipc_send_all(int fd, const char *s)
         s += w;
         n -= (size_t)w;
     }
+}
+
+static int ipc_read_line(int fd, char *buf, size_t cap)
+{
+    size_t off = 0;
+    while (off + 1 < cap) {
+        struct pollfd p = { fd, POLLIN, 0 };
+        int r = poll(&p, 1, IPC_TIMEOUT_MS);
+        if (r == 0) {
+            if (off > 0) break;
+            return -1;
+        }
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        char c;
+        ssize_t n = read(fd, &c, 1);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) break;
+        if (c == '\n') {
+            buf[off] = 0;
+            return (int)off;
+        }
+        if (c == '\r') continue;
+        buf[off++] = c;
+    }
+    buf[off] = 0;
+    return (int)off;
 }
 
 static void ipc_handle(struct ycomp_server *s, int fd, char *line)
@@ -156,8 +195,13 @@ static int ipc_accept(int fd, uint32_t mask, void *data)
     int c = accept(fd, NULL, NULL);
     if (c < 0) return 0;
     if (!peer_allowed(c)) { close(c); return 0; }
-    char buf[256];
-    ssize_t n = read(c, buf, sizeof(buf) - 1);
+
+    struct timeval tv = { IPC_TIMEOUT_MS / 1000,
+                          (IPC_TIMEOUT_MS % 1000) * 1000 };
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char buf[IPC_MAX_LINE];
+    int n = ipc_read_line(c, buf, sizeof(buf));
     if (n > 0) {
         buf[n] = 0;
         ipc_handle(s, c, buf);

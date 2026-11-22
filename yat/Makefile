@@ -1,27 +1,31 @@
-CC      ?= gcc
-CFLAGS  ?= -Wall -Wextra   -std=c11 -O2 -D_GNU_SOURCE \
-           $(shell pkg-config --cflags openssl 2>/dev/null)
-LIBS     = $(shell pkg-config --libs openssl 2>/dev/null || echo -lssl -lcrypto)
+CARGO ?= cargo
+FLAGS  = --release --offline --frozen
+PREFIX ?= /usr
 
-SRC = yat.c ed25519.c http.c yat_meta.c
-OBJ = $(SRC:.c=.o)
-BIN = yat yat-keygen yat-sign
+all:
+	$(CARGO) build $(FLAGS)
 
-all: $(BIN)
-
-yat: $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LIBS)
-
-yat-keygen: yat-keygen.c ed25519.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
-
-yat-sign: yat-sign.c ed25519.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
-
-%.o: %.c yat.h ed25519.h
-	$(CC) $(CFLAGS) -c -o $@ $<
+vendor:
+	@if [ -d vendor ] && [ -n "$$(ls -A vendor 2>/dev/null)" ]; then \
+		echo "vendor/ уже существует"; exit 0; \
+	fi; \
+	set -e; \
+	if [ -f .cargo/config.toml ]; then mv .cargo/config.toml .cargo/config.toml.off; fi; \
+	trap 'if [ -f .cargo/config.toml.off ]; then mv .cargo/config.toml.off .cargo/config.toml; fi' EXIT; \
+	$(CARGO) vendor vendor/
 
 clean:
-	rm -f $(BIN) *.o
+	$(CARGO) clean
 
-.PHONY: all clean
+install: all
+	install -Dm755 target/release/yat        $(DESTDIR)$(PREFIX)/bin/yat
+	install -Dm755 target/release/yat-keygen $(DESTDIR)$(PREFIX)/bin/yat-keygen
+	install -Dm755 target/release/yat-sign   $(DESTDIR)$(PREFIX)/bin/yat-sign
+
+test:
+	$(CARGO) test $(FLAGS)
+
+fmt:
+	$(CARGO) fmt
+
+.PHONY: all vendor clean install test fmt

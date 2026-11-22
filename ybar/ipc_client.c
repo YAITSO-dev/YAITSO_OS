@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "ybar.h"
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -68,6 +70,12 @@ int ybar_ipc_send(const char *cmd, char *reply, size_t rn)
         ssize_t w = write(fd, cmd + sent, wn - sent);
         if (w <= 0) { close(fd); return -1; }
         sent += (size_t)w;
+    }
+    /* Сервер читает команду построчно; без перевода строки он ждал бы
+     * таймаут, а панель выглядела бы зависшей. */
+    if (wn == 0 || cmd[wn - 1] != '\n') {
+        char nl = '\n';
+        if (write(fd, &nl, 1) != 1) { close(fd); return -1; }
     }
     ssize_t n = read(fd, reply, rn - 1);
     close(fd);

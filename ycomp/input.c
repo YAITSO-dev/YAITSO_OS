@@ -12,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <ctype.h>
 
 static uint32_t mods_of(struct ycomp_server *s)
 {
@@ -30,8 +31,25 @@ static uint32_t mods_of(struct ycomp_server *s)
     return m;
 }
 
+static int safe_exec_name(const char *s)
+{
+    if (!s || !*s) return 0;
+    for (const char *p = s; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (isalnum(c) || c == '/' || c == '.' || c == '_' ||
+            c == '-' || c == '+' || c == ':' || c == '@') continue;
+        return 0;
+    }
+    return 1;
+}
+
 static void spawn_cmd(const char *cmd)
 {
+    if (!safe_exec_name(cmd)) {
+        fprintf(stderr, "ycomp: unsafe exec name rejected: %s\n",
+                cmd ? cmd : "(null)");
+        return;
+    }
     pid_t pid = fork();
     if (pid != 0) return;
     setsid();
@@ -129,16 +147,16 @@ static void keyboard_key(struct wl_listener *l, void *data)
     struct ycomp_server *s = wl_container_of(l, s, keyboard_key);
     struct wlr_keyboard_key_event *ev = data;
 
-    if (!s->kb_group) return;
+    if (!s || !s->kb_group) return;
     if (!s->kb_group->keyboard.xkb_state) return;
 
     uint32_t keycode = ev->keycode + 8;
-    const xkb_keysym_t *syms;
+    const xkb_keysym_t *syms = NULL;
     int nsyms = xkb_state_key_get_syms(s->kb_group->keyboard.xkb_state,
                                        keycode, &syms);
 
     int handled = 0;
-    if (ev->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+    if (ev->state == WL_KEYBOARD_KEY_STATE_PRESSED && syms) {
         for (int i = 0; i < nsyms; i++) {
             xkb_keysym_t sym = syms[i];
 
@@ -226,7 +244,7 @@ static void keyboard_modifiers(struct wl_listener *l, void *data)
 {
     (void)data;
     struct ycomp_server *s = wl_container_of(l, s, keyboard_modifiers);
-    if (!s->kb_group) return;
+    if (!s || !s->kb_group) return;
     wlr_seat_set_keyboard(s->seat, &s->kb_group->keyboard);
     wlr_seat_keyboard_notify_modifiers(s->seat,
         &s->kb_group->keyboard.modifiers);
@@ -234,6 +252,7 @@ static void keyboard_modifiers(struct wl_listener *l, void *data)
 
 static void pointer_attach(struct ycomp_server *s, struct wlr_input_device *dev)
 {
+    if (!s || !s->cursor || !dev) return;
     wlr_cursor_attach_input_device(s->cursor, dev);
 }
 
@@ -241,6 +260,7 @@ void ycomp_input_new(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, new_input);
     struct wlr_input_device *dev = data;
+    if (!s || !dev) return;
 
     switch (dev->type) {
     case WLR_INPUT_DEVICE_KEYBOARD: {
@@ -317,6 +337,7 @@ static void grab_apply(struct ycomp_server *s, double total_dx, double total_dy)
 void ycomp_pointer_motion_delta(struct ycomp_server *s, uint32_t time_msec,
                                double dx, double dy)
 {
+    if (!s || !s->cursor) return;
     if (s->grabbing && s->grab_view) {
         wlr_cursor_move(s->cursor, NULL, dx, dy);
         grab_apply(s, s->cursor->x - s->grab_sx,
@@ -342,6 +363,7 @@ void ycomp_pointer_motion_delta(struct ycomp_server *s, uint32_t time_msec,
 void ycomp_pointer_motion_abs(struct ycomp_server *s, uint32_t time_msec,
                               double x, double y)
 {
+    if (!s || !s->cursor) return;
     wlr_cursor_warp_absolute(s->cursor, NULL, x, y);
 
     if (s->grabbing && s->grab_view) {
@@ -388,6 +410,7 @@ static struct ycomp_view *view_edges_at(struct ycomp_server *s, double lx,
 void ycomp_pointer_button_event(struct ycomp_server *s, uint32_t time_msec,
                                 uint32_t button, uint32_t state)
 {
+    if (!s || !s->cursor) return;
     if (state == WL_POINTER_BUTTON_STATE_RELEASED && s->grabbing) {
         s->grabbing = 0;
         s->grab_resize = 0;
@@ -496,6 +519,7 @@ void ycomp_pointer_axis_event(struct ycomp_server *s, uint32_t time_msec,
                               uint32_t orientation, double delta,
                               int32_t delta_discrete, uint32_t source)
 {
+    if (!s) return;
     wlr_seat_pointer_notify_axis(s->seat, time_msec, orientation, delta,
                                  delta_discrete, source,
                                  WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
@@ -506,6 +530,7 @@ void ycomp_cursor_motion(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, cursor_motion);
     struct wlr_pointer_motion_event *ev = data;
+    if (!s || !ev) return;
     ycomp_pointer_motion_delta(s, ev->time_msec, ev->delta_x, ev->delta_y);
 }
 
@@ -513,6 +538,7 @@ void ycomp_cursor_motion_abs(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, cursor_motion_absolute);
     struct wlr_pointer_motion_absolute_event *ev = data;
+    if (!s || !ev) return;
     ycomp_pointer_motion_abs(s, ev->time_msec, ev->x, ev->y);
 }
 
@@ -520,6 +546,7 @@ void ycomp_cursor_button(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, cursor_button);
     struct wlr_pointer_button_event *ev = data;
+    if (!s || !ev) return;
     ycomp_pointer_button_event(s, ev->time_msec, ev->button, ev->state);
 }
 
@@ -527,6 +554,7 @@ void ycomp_cursor_axis(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, cursor_axis);
     struct wlr_pointer_axis_event *ev = data;
+    if (!s || !ev) return;
     ycomp_pointer_axis_event(s, ev->time_msec, ev->orientation, ev->delta,
                              ev->delta_discrete, ev->source);
 }
@@ -535,6 +563,7 @@ void ycomp_cursor_frame(struct wl_listener *l, void *data)
 {
     (void)data;
     struct ycomp_server *s = wl_container_of(l, s, cursor_frame);
+    if (!s) return;
     wlr_seat_pointer_notify_frame(s->seat);
 }
 
@@ -542,6 +571,7 @@ void ycomp_request_cursor(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, request_cursor);
     struct wlr_seat_pointer_request_set_cursor_event *ev = data;
+    if (!s || !ev) return;
     struct wlr_seat_client *focused = s->seat->pointer_state.focused_client;
     if (focused != NULL && ev->seat_client == focused)
         wlr_cursor_set_surface(s->cursor, ev->surface,
@@ -552,5 +582,6 @@ void ycomp_request_set_selection(struct wl_listener *l, void *data)
 {
     struct ycomp_server *s = wl_container_of(l, s, request_set_selection);
     struct wlr_seat_request_set_selection_event *ev = data;
+    if (!s || !ev) return;
     wlr_seat_set_selection(s->seat, ev->source, ev->serial);
 }

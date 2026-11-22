@@ -18,7 +18,7 @@
 #include <sys/reboot.h>
 #include <linux/fs.h>
 
-#define INSTALLER_VERSION "0.3.3"
+#define INSTALLER_VERSION "0.3.31"
 #define TARGET "/mnt/yaitso"
 #define MIN_DISK_BYTES (4ULL * 1024 * 1024 * 1024)
 
