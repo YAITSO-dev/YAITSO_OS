@@ -114,16 +114,19 @@ repo-sync: repo-sign
 	HOST="$$HOST" DEST="$${DEST:-/var/www/yaitso-repo/}" DRY="$${DRY:-0}" sh build/repo-sync.sh
 
 iso: all repo
+	sh build/repo-sign.sh
 	sudo bash build/bootstrap.sh
 	sudo bash build/mkiso.sh
 	sudo chown $$SUDO_USER:$$SUDO_USER $(ISO)
 
 iso-gui: all gui repo-gui
+	sh build/repo-sign.sh
 	sudo bash build/bootstrap.sh
 	sudo bash build/mkiso.sh
 	sudo chown $$SUDO_USER:$$SUDO_USER $(ISO)
 
 iso-full: all gui repo-full
+	sh build/repo-sign.sh
 	sudo bash build/bootstrap.sh
 	sudo bash build/mkiso.sh
 	sudo chown $$SUDO_USER:$$SUDO_USER $(ISO)

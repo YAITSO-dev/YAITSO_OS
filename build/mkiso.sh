@@ -1,5 +1,5 @@
 #!/bin/bash
-# Сборка live-ISO Yaitso OS 0.3.3.
+# Сборка live-ISO Yaitso OS 0.3.31.
 #
 # Использование:  sudo build/mkiso.sh           (или KERNEL=... KVER=... build/mkiso.sh)
 #
@@ -15,7 +15,7 @@ set -eu
 DIST_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROOTFS="$DIST_DIR/build/rootfs"
 ISODIR="$DIST_DIR/build/iso"
-OUT="$DIST_DIR/yaitso-0.3.3.iso"
+OUT="$DIST_DIR/yaitso-0.3.31.iso"
 KERNEL="${KERNEL:-/boot/vmlinuz}"
 KVER="${KVER:-$(uname -r)}"
 MODDIR="/lib/modules/$KVER"
@@ -377,15 +377,15 @@ mkdir -p "$ISODIR/boot/grub" "$ISODIR/EFI/BOOT"
 cat > "$ISODIR/boot/grub/grub.cfg" <<MKGRUB
 set timeout=3
 set default=0
-menuentry "Yaitso OS 0.3.3 (live)" {
+menuentry "Yaitso OS 0.3.31 (live)" {
     linux /boot/vmlinuz quiet console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init video=efifb:off video=simpledrm:off
     initrd /boot/initramfs.gz
 }
-menuentry "Yaitso OS 0.3.3 (verbose)" {
+menuentry "Yaitso OS 0.3.31 (verbose)" {
     linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init video=efifb:off video=simpledrm:off
     initrd /boot/initramfs.gz
 }
-menuentry "Yaitso OS 0.3.3 (install)" {
+menuentry "Yaitso OS 0.3.31 (install)" {
     linux /boot/vmlinuz quiet console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init yaitso.install=1 video=efifb:off video=simpledrm:off
     initrd /boot/initramfs.gz
 }
