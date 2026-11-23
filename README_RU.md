@@ -146,7 +146,7 @@ Yet Another Independent Typical Stable Origin OS
     make test
     make check
     make repo repo-sign
-    sudo make iso-gui
+    make iso-gui
     make qemu-gui
 
 Собранные исполняемые файлы, объектные файлы и каталог `gui-out` в

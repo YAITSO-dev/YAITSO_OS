@@ -113,23 +113,32 @@ repo-sync: repo-sign
 	@if [ -z "$$HOST" ]; then echo "usage: make repo-sync HOST=user@host"; exit 1; fi
 	HOST="$$HOST" DEST="$${DEST:-/var/www/yaitso-repo/}" DRY="$${DRY:-0}" sh build/repo-sync.sh
 
-iso: all repo
-	sh build/repo-sign.sh
-	sudo bash build/bootstrap.sh
-	sudo bash build/mkiso.sh
-	sudo chown $$SUDO_USER:$$SUDO_USER $(ISO)
+# Сборка пакетов и бинарников должна идти от обычного пользователя:
+# у root другой PATH и, как правило, старый cargo без edition2024.
+# root нужен только для bootstrap/mkiso, поэтому sudo стоит внутри рецепта.
+not-root:
+	@if [ "$$(id -u)" = "0" ]; then \
+		echo "iso: запускайте без sudo — make iso-gui" >&2; \
+		exit 1; \
+	fi
 
-iso-gui: all gui repo-gui
+iso: not-root all repo
 	sh build/repo-sign.sh
 	sudo bash build/bootstrap.sh
 	sudo bash build/mkiso.sh
-	sudo chown $$SUDO_USER:$$SUDO_USER $(ISO)
+	sudo chown $$(id -u):$$(id -g) $(ISO)
 
-iso-full: all gui repo-full
+iso-gui: not-root all gui repo-gui
 	sh build/repo-sign.sh
 	sudo bash build/bootstrap.sh
 	sudo bash build/mkiso.sh
-	sudo chown $$SUDO_USER:$$SUDO_USER $(ISO)
+	sudo chown $$(id -u):$$(id -g) $(ISO)
+
+iso-full: not-root all gui repo-full
+	sh build/repo-sign.sh
+	sudo bash build/bootstrap.sh
+	sudo bash build/mkiso.sh
+	sudo chown $$(id -u):$$(id -g) $(ISO)
 
 qemu: $(ISO)
 	sh build/run-qemu.sh bios
@@ -208,6 +217,6 @@ clean-all: clean clean-repo clean-glibc clean-iso
 
 .PHONY: all gui tools yat yhttpd init svc getty users installer ybox net ytui yctl \
         libywt ycomp yterm ybar ylaunch glibc glibc-libs glibc-all repo repo-gui \
-        repo-full repo-sign repo-serve repo-sync iso iso-gui iso-full qemu qemu-uefi \
+        repo-full repo-sign repo-serve repo-sync iso iso-gui iso-full not-root qemu qemu-uefi \
         qemu-gui run test test-yat test-glibc check debug format analyze clean \
         clean-repo clean-glibc clean-iso clean-all

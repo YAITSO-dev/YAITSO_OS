@@ -123,7 +123,7 @@ distribution's own libc.
 - pixman, wlroots >= 0.18, FreeType 2, OpenSSL
 - Meson and Ninja for wlroots/glibc components
 - QEMU for testing the ISO (optional)
-- root privileges for creating the image (`sudo make iso-gui`)
+- root privileges for creating the image (`make iso-gui`; `sudo` is requested for the image steps only)
 
 The resulting system runs with 2 GB of RAM; the live ISO uses the `bochs`
 DRM driver under QEMU's `-vga std`, or `virtio_gpu` with `-vga virtio`.
@@ -137,7 +137,7 @@ make test               # smoke and shell tests
 make check              # build everything and run tests
 
 make repo repo-sign     # build and sign packages
-sudo make iso-gui       # create yaitso-0.3.31.iso
+make iso-gui            # create yaitso-0.3.31.iso (sudo only for image steps)
 make qemu-gui           # boot the ISO in QEMU (VNC on :1)
 ```
 
