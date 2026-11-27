@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eu
 DIST_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ISO="$DIST_DIR/yaitso-0.3.31.iso"
+ISO="$DIST_DIR/yaitso-0.3.4.iso"
 DISK="${DISK:-$DIST_DIR/build/disk.img}"
 MEM="${MEM:-1024}"
 CPUS="${CPUS:-2}"
