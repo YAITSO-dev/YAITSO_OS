@@ -1,33 +1,33 @@
-# Yaitso OS 0.3.31
+# Yaitso OS 0.3.4
 
 **Lightweight independent Linux distribution with a custom Wayland compositor, shell, and package manager.**
 
 **Русская версия:** [README_RU.md](README_RU.md)
 
-![Yaitso OS 0.3.31 desktop with the ybar top panel and the yterm terminal](assets/yaitso-0.3.31-desktop.png)
+![Yaitso OS 0.3.4 desktop with the ybar top panel and the yterm terminal](assets/yaitso-0.3.4-desktop.png)
 
 ## Download and quick start
 
 The latest ISO image is attached to the
-[Yaitso_0.3.31 release](https://github.com/YAITSO-dev/YAITSO_OS/releases/download/Yaitso_0.3.31/yaitso-0.3.31.iso).
+[Yaitso_0.3.4 release](https://github.com/YAITSO-dev/YAITSO_OS/releases/download/Yaitso_0.3.4/yaitso-0.3.4.iso).
 
 Boot it in QEMU without installing:
 
 ```sh
-qemu-system-x86_64 -m 2048 -smp 2 -cdrom yaitso-0.3.31.iso -boot d -vga std
+qemu-system-x86_64 -m 2048 -smp 2 -cdrom yaitso-0.3.4.iso -boot d -vga std
 ```
 
 If `/dev/kvm` is available, add `-enable-kvm -cpu host` for near-native speed.
 On a Linux host you can also use the helper script:
 
 ```sh
-./run-qemu.sh yaitso-0.3.31.iso          # BIOS
-./run-qemu.sh yaitso-0.3.31.iso uefi     # UEFI
+./run-qemu.sh yaitso-0.3.4.iso          # BIOS
+./run-qemu.sh yaitso-0.3.4.iso uefi     # UEFI
 ```
 
 The live image starts the graphical session automatically: `ycomp` brings up
 the compositor, `ybar` appears at the top of the screen, and `yterm` opens a
-shell. To install, choose **Yaitso OS 0.3.31 (install)** in the GRUB menu or run
+shell. To install, choose **Yaitso OS 0.3.4 (install)** in the GRUB menu or run
 `yaitso-install`; the installer formats the target disk and sets up the
 bootloader, user account, and graphical session.
 
@@ -137,7 +137,7 @@ make test               # smoke and shell tests
 make check              # build everything and run tests
 
 make repo repo-sign     # build and sign packages
-make iso-gui            # create yaitso-0.3.31.iso (sudo only for image steps)
+make iso-gui            # create yaitso-0.3.4.iso (sudo only for image steps)
 make qemu-gui           # boot the ISO in QEMU (VNC on :1)
 ```
 
@@ -146,7 +146,7 @@ stored in the repository; `make` and `make gui` regenerate them.
 
 ### Installing to disk
 
-Boot the ISO, choose **Yaitso OS 0.3.31 (install)** in GRUB, and follow the
+Boot the ISO, choose **Yaitso OS 0.3.4 (install)** in GRUB, and follow the
 prompts. The installer can also be driven non-interactively:
 
 ```sh
@@ -157,7 +157,9 @@ yaitso-install --disk /dev/vda --hostname yaitso --user andrey \
 It creates a GPT layout (ESP + root on UEFI, BIOS boot + root otherwise),
 formats the filesystems, copies the live system, writes `/etc/fstab` with
 UUIDs, creates the user, locks the root password, and installs GRUB for the
-selected firmware.
+selected firmware. Add `--luks` (and `--luks-password`) to encrypt the root
+filesystem with LUKS2; the installer then creates a separate unencrypted
+`/boot` partition so GRUB can load the kernel and initramfs.
 
 ### Known limitations
 
@@ -166,6 +168,37 @@ selected firmware.
 - GUI: Wayland only, no XWayland
 - VT100: no Sixel or mouse reporting
 - The graphical session requires a DRM/KMS device
+
+## Changelog 0.3.4
+
+Yaitso OS 0.3.4 fixes pointer input in the live session and adds optional
+LUKS2 disk encryption to the installer.
+
+### Input
+
+- `ycomp` deduplicates evdev nodes by physical device path, so a mouse that
+  exposes both absolute and relative event nodes no longer makes the cursor
+  jump between positions
+- touchpads are no longer mapped onto the whole screen: absolute finger
+  coordinates are converted to relative motion
+- `SYN_DROPPED` is handled, and pointer focus uses `enter` only when the
+  surface under the cursor actually changes
+
+### Installer and boot
+
+- New options `--luks`, `--no-luks`, and `--luks-password`, plus an
+  interactive question in the default flow
+- LUKS2 root (`aes-xts-plain64`, 512-bit key) with a separate unencrypted
+  1 GiB `/boot` partition, because GRUB cannot read a kernel from LUKS
+- The installed initramfs ships `cryptsetup` and dm-crypt modules, prompts
+  for the passphrase, unlocks the root, mounts `/boot`, and runs `switch_root`
+- The fallback UEFI loader finds both `/grub/grub.cfg` and
+  `/boot/grub/grub.cfg`
+- The non-LUKS partition layout is unchanged
+
+### Other
+
+- Version bumped to 0.3.4 in packages, man pages, and documentation
 
 ## Changelog 0.3.31
 

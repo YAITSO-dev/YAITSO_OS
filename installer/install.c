@@ -18,15 +18,23 @@
 #include <sys/reboot.h>
 #include <linux/fs.h>
 
-#define INSTALLER_VERSION "0.3.31"
+#define INSTALLER_VERSION "0.3.4"
 #define TARGET "/mnt/yaitso"
 #define MIN_DISK_BYTES (4ULL * 1024 * 1024 * 1024)
+#define CRYPT_NAME "yaitso-root"
+#define CRYPT_MAPPER "/dev/mapper/" CRYPT_NAME
+#define BOOT_SIZE_MIB 1024
 
 static int g_uefi = 0;
 static int g_yes = 0;
 static int g_force = 0;
+static int g_luks = 0;
+static int g_luks_set = 0;
+static char g_luks_pass[256];
 static int g_root_mounted = 0;
+static int g_boot_mounted = 0;
 static int g_esp_mounted = 0;
+static int g_crypt_open = 0;
 static int g_bind_dev = 0, g_bind_proc = 0, g_bind_sys = 0, g_bind_run = 0;
 
 static void print_header(void)
@@ -394,6 +402,23 @@ static void part_path(const char *disk, int num, size_t n, char *out)
         snprintf(out, n, "%s%d", disk, num);
 }
 
+/* Без LUKS корень — раздел 2. С LUKS раздел 2 отдан незашифрованному
+ * /boot (GRUB не умеет читать ядро из LUKS), а корень — раздел 3. */
+static int root_part_num(void)
+{
+    return g_luks ? 3 : 2;
+}
+
+static void root_part_path(const char *disk, char *out, size_t n)
+{
+    part_path(disk, root_part_num(), n, out);
+}
+
+static void boot_part_path(const char *disk, char *out, size_t n)
+{
+    part_path(disk, 2, n, out);
+}
+
 static int reload_partitions(const char *disk)
 {
     int fd = open(disk, O_RDONLY);
@@ -410,7 +435,7 @@ static int reload_partitions(const char *disk)
 static int create_partitions(const char *disk)
 {
     char rootp[160], espp[160];
-    part_path(disk, 2, sizeof(rootp), rootp);
+    root_part_path(disk, rootp, sizeof(rootp));
     part_path(disk, 1, sizeof(espp), espp);
 
     char wipe[512];
@@ -419,16 +444,40 @@ static int create_partitions(const char *disk)
         (void)run_argv(av);
     }
 
+    char bootstart[32], bootend[32], rootstart[32];
+    snprintf(bootstart, sizeof(bootstart), "%dMiB", 513);
+    snprintf(bootend, sizeof(bootend), "%dMiB", 513 + BOOT_SIZE_MIB);
+    /* С LUKS: p1 ESP/bios_grub, p2 /boot, p3 LUKS-корень. Без LUKS всё как
+     * раньше: p1 служебный, p2 корень. */
+    snprintf(rootstart, sizeof(rootstart), "%dMiB", 513 + BOOT_SIZE_MIB);
+
     char ptool[512];
     if (find_tool("parted", ptool, sizeof(ptool))) {
-        printf("  >>> разметка %s (parted, %s)\n", disk,
-               g_uefi ? "UEFI" : "BIOS");
-        if (g_uefi) {
+        printf("  >>> разметка %s (parted, %s%s)\n", disk,
+               g_uefi ? "UEFI" : "BIOS", g_luks ? ", LUKS" : "");
+        if (g_uefi && g_luks) {
+            char *av[] = { ptool, "-s", (char *)disk,
+                "mklabel", "gpt",
+                "mkpart", "ESP", "fat32", "1MiB", "513MiB",
+                "set", "1", "esp", "on",
+                "mkpart", "boot", "ext4", bootstart, bootend,
+                "mkpart", "root", "ext4", rootstart, "100%", NULL };
+            if (run_argv(av) != 0) { die("parted не создал разделы"); return -1; }
+        } else if (g_uefi) {
             char *av[] = { ptool, "-s", (char *)disk,
                 "mklabel", "gpt",
                 "mkpart", "ESP", "fat32", "1MiB", "513MiB",
                 "set", "1", "esp", "on",
                 "mkpart", "root", "ext4", "513MiB", "100%", NULL };
+            if (run_argv(av) != 0) { die("parted не создал разделы"); return -1; }
+        } else if (g_luks) {
+            char *av[] = { ptool, "-s", (char *)disk,
+                "mklabel", "gpt",
+                "mkpart", "bios_grub", "1MiB", "2MiB",
+                "set", "1", "bios_grub", "on",
+                "mkpart", "boot", "ext4", "2MiB", "1026MiB",
+                "mkpart", "root", "ext4", "1026MiB", "100%", NULL };
+            /* Без ESP /boot начинается сразу после bios_grub. */
             if (run_argv(av) != 0) { die("parted не создал разделы"); return -1; }
         } else {
             char *av[] = { ptool, "-s", (char *)disk,
@@ -439,13 +488,25 @@ static int create_partitions(const char *disk)
             if (run_argv(av) != 0) { die("parted не создал разделы"); return -1; }
         }
     } else if (find_tool("sfdisk", ptool, sizeof(ptool))) {
-        printf("  >>> разметка %s (sfdisk, %s)\n", disk,
-               g_uefi ? "UEFI" : "BIOS");
-        const char *script = g_uefi
-            ? "label: gpt\n"
+        printf("  >>> разметка %s (sfdisk, %s%s)\n", disk,
+               g_uefi ? "UEFI" : "BIOS", g_luks ? ", LUKS" : "");
+        const char *script = NULL;
+        if (g_uefi && g_luks)
+            script = "label: gpt\n"
               "start=2048, size=1048576, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=ESP\n"
-              "start=1050624, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root\n"
-            : "label: gpt\n"
+              "start=1050624, size=2097152, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot\n"
+              "start=3147776, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root\n";
+        else if (g_uefi)
+            script = "label: gpt\n"
+              "start=2048, size=1048576, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=ESP\n"
+              "start=1050624, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root\n";
+        else if (g_luks)
+            script = "label: gpt\n"
+              "start=2048, size=2048, type=21686148-6449-6E6F-744E-656564454649, name=bios_grub\n"
+              "start=6144, size=2097152, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot\n"
+              "start=2103296, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root\n";
+        else
+            script = "label: gpt\n"
               "start=2048, size=2048, type=21686148-6449-6E6F-744E-656564454649, name=bios_grub\n"
               "start=4096, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root\n";
         char *av[] = { ptool, "-q", (char *)disk, NULL };
@@ -464,10 +525,46 @@ static int create_partitions(const char *disk)
     return 0;
 }
 
+static int luks_format(const char *dev)
+{
+    char tool[512];
+    if (!find_tool("cryptsetup", tool, sizeof(tool))) {
+        die("для LUKS нужен cryptsetup в live-образе");
+        return -1;
+    }
+    printf("  >>> cryptsetup luksFormat %s\n", dev);
+    char *av[] = { tool, "luksFormat", "--type", "luks2",
+                   "--cipher", "aes-xts-plain64", "--key-size", "512",
+                   "--hash", "sha256", "--batch-mode",
+                   "--key-file", "-", (char *)dev, NULL };
+    if (run_input(av, g_luks_pass) != 0) {
+        die("cryptsetup luksFormat не удался");
+        return -1;
+    }
+    return 0;
+}
+
+static int luks_open(const char *dev)
+{
+    char tool[512];
+    if (!find_tool("cryptsetup", tool, sizeof(tool))) {
+        die("для LUKS нужен cryptsetup в live-образе");
+        return -1;
+    }
+    printf("  >>> cryptsetup luksOpen %s %s\n", dev, CRYPT_NAME);
+    char *av[] = { tool, "luksOpen", "--key-file", "-",
+                   (char *)dev, CRYPT_NAME, NULL };
+    if (run_input(av, g_luks_pass) != 0) {
+        die("cryptsetup luksOpen не удался");
+        return -1;
+    }
+    return 0;
+}
+
 static int format_filesystems(const char *disk)
 {
     char rootp[160], espp[160];
-    part_path(disk, 2, sizeof(rootp), rootp);
+    root_part_path(disk, rootp, sizeof(rootp));
     part_path(disk, 1, sizeof(espp), espp);
 
     if (g_uefi) {
@@ -479,11 +576,30 @@ static int format_filesystems(const char *disk)
         }
     }
 
-    printf("  >>> mkfs.ext4 %s\n", rootp);
-    char *av[] = { "-F", "-L", "yaitso-root", rootp, NULL };
+    const char *rootdev = rootp;
+    if (g_luks) {
+        if (luks_format(rootp) != 0) return -1;
+        if (luks_open(rootp) != 0) return -1;
+        g_crypt_open = 1;
+        rootdev = CRYPT_MAPPER;
+    }
+
+    printf("  >>> mkfs.ext4 %s\n", rootdev);
+    char *av[] = { "-F", "-L", "yaitso-root", (char *)rootdev, NULL };
     if (run_tool("mkfs.ext4", av) != 0) {
         die("mkfs.ext4 не удался (нужен e2fsprogs в образе)");
         return -1;
+    }
+
+    if (g_luks) {
+        char bootp[160];
+        boot_part_path(disk, bootp, sizeof(bootp));
+        printf("  >>> mkfs.ext4 %s (/boot)\n", bootp);
+        char *bav[] = { "-F", "-L", "yaitso-boot", bootp, NULL };
+        if (run_tool("mkfs.ext4", bav) != 0) {
+            die("mkfs.ext4 для /boot не удался");
+            return -1;
+        }
     }
     return 0;
 }
@@ -491,15 +607,29 @@ static int format_filesystems(const char *disk)
 static int mount_target(const char *disk)
 {
     char rootp[160], espp[160];
-    part_path(disk, 2, sizeof(rootp), rootp);
+    root_part_path(disk, rootp, sizeof(rootp));
     part_path(disk, 1, sizeof(espp), espp);
 
     mkdir_p(TARGET, 0755);
-    if (mount(rootp, TARGET, "ext4", 0, NULL) != 0) {
+    const char *rootdev = g_luks ? CRYPT_MAPPER : rootp;
+    if (mount(rootdev, TARGET, "ext4", 0, NULL) != 0) {
         die("не удалось смонтировать корневой раздел");
         return -1;
     }
     g_root_mounted = 1;
+
+    if (g_luks) {
+        char bootp[160];
+        boot_part_path(disk, bootp, sizeof(bootp));
+        char bdir[512];
+        snprintf(bdir, sizeof(bdir), "%s/boot", TARGET);
+        mkdir_p(bdir, 0755);
+        if (mount(bootp, bdir, "ext4", 0, NULL) != 0) {
+            die("не удалось смонтировать /boot");
+            return -1;
+        }
+        g_boot_mounted = 1;
+    }
 
     if (g_uefi) {
         char efi[512];
@@ -599,23 +729,46 @@ static int write_target_config(const char *hostname, const char *user,
 static int write_fstab(const char *disk)
 {
     char rootp[160], espp[160];
-    part_path(disk, 2, sizeof(rootp), rootp);
+    root_part_path(disk, rootp, sizeof(rootp));
     part_path(disk, 1, sizeof(espp), espp);
-    char ruuid[128], euuid[128];
-    int rh = 0, eh = 0;
-    get_uuid(rootp, ruuid, sizeof(ruuid), &rh);
+    char ruuid[128], euuid[128], buuid[128];
+    int rh = 0, eh = 0, bh = 0;
+    if (g_luks) {
+        char bootp[160];
+        boot_part_path(disk, bootp, sizeof(bootp));
+        get_uuid(bootp, buuid, sizeof(buuid), &bh);
+    } else {
+        get_uuid(rootp, ruuid, sizeof(ruuid), &rh);
+    }
     if (g_uefi) get_uuid(espp, euuid, sizeof(euuid), &eh);
 
-    char buf[1024];
-    snprintf(buf, sizeof(buf),
-        "# /etc/fstab: Yaitso OS\n"
-        "# <file system> <mount point> <type> <options> <dump> <pass>\n"
-        "%s%s / ext4 defaults,noatime 0 1\n"
-        "proc /proc proc defaults 0 0\n"
-        "sysfs /sys sysfs defaults 0 0\n"
-        "devtmpfs /dev devtmpfs defaults 0 0\n"
-        "tmpfs /tmp tmpfs mode=1777 0 0\n",
-        rh ? "UUID=" : "", rh ? ruuid : rootp);
+    /* LUKS-корень адресуется через mapper: initramfs открывает контейнер
+     * до монтирования. /boot лежит на отдельном незашифрованном разделе. */
+    char buf[1536];
+    if (g_luks) {
+        char bootp[160];
+        boot_part_path(disk, bootp, sizeof(bootp));
+        snprintf(buf, sizeof(buf),
+            "# /etc/fstab: Yaitso OS\n"
+            "# <file system> <mount point> <type> <options> <dump> <pass>\n"
+            CRYPT_MAPPER " / ext4 defaults,noatime 0 1\n"
+            "%s%s /boot ext4 defaults,noatime 0 2\n"
+            "proc /proc proc defaults 0 0\n"
+            "sysfs /sys sysfs defaults 0 0\n"
+            "devtmpfs /dev devtmpfs defaults 0 0\n"
+            "tmpfs /tmp tmpfs mode=1777 0 0\n",
+            bh ? "UUID=" : "", bh ? buuid : bootp);
+    } else {
+        snprintf(buf, sizeof(buf),
+            "# /etc/fstab: Yaitso OS\n"
+            "# <file system> <mount point> <type> <options> <dump> <pass>\n"
+            "%s%s / ext4 defaults,noatime 0 1\n"
+            "proc /proc proc defaults 0 0\n"
+            "sysfs /sys sysfs defaults 0 0\n"
+            "devtmpfs /dev devtmpfs defaults 0 0\n"
+            "tmpfs /tmp tmpfs mode=1777 0 0\n",
+            rh ? "UUID=" : "", rh ? ruuid : rootp);
+    }
     if (g_uefi) {
         char line[256];
         snprintf(line, sizeof(line),
@@ -658,28 +811,44 @@ static int copy_kernel(void)
 
 static int write_grub_cfg(const char *disk)
 {
-    char rootp[160];
-    part_path(disk, 2, sizeof(rootp), rootp);
+    char rootp[160], bootp[160];
+    root_part_path(disk, rootp, sizeof(rootp));
+    boot_part_path(disk, bootp, sizeof(bootp));
 
     /* Корень указываем устройством, а не UUID: минимальный initramfs
      * установленной системы монтирует его до запуска /sbin/init и не
      * содержит blkid для разбора UUID. /etc/fstab при этом остаётся
-     * на UUID — это важно для нормальной работы системы. */
-    char cfg[1024];
+     * на UUID — это важно для нормальной работы системы.
+     *
+     * При LUKS /boot — отдельный незашифрованный раздел, поэтому ядро и
+     * initramfs лежат в его корне (/vmlinuz, /initramfs.gz). Initramfs
+     * получает cryptroot= и bootroot=, открывает контейнер и монтирует
+     * /boot до switch_root. */
+    const char *kpath = g_luks ? "/vmlinuz" : "/boot/vmlinuz";
+    const char *ipath = g_luks ? "/initramfs.gz" : "/boot/initramfs.gz";
+
+    char cmdline[768];
+    if (g_luks) {
+        snprintf(cmdline, sizeof(cmdline),
+                 "root=" CRYPT_MAPPER " cryptroot=%s bootroot=%s rw",
+                 rootp, bootp);
+    } else {
+        snprintf(cmdline, sizeof(cmdline), "root=%s rw", rootp);
+    }
+
+    char cfg[2048];
     snprintf(cfg, sizeof(cfg),
         "set default=0\n"
         "set timeout=5\n\n"
         "menuentry \"Yaitso OS " INSTALLER_VERSION "\" {\n"
-        "    linux /boot/vmlinuz root=%s rw quiet "
-        "console=tty0 console=ttyS0,115200n8\n"
-        "    initrd /boot/initramfs.gz\n"
+        "    linux %s %s quiet console=tty0 console=ttyS0,115200n8\n"
+        "    initrd %s\n"
         "}\n\n"
         "menuentry \"Yaitso OS (verbose)\" {\n"
-        "    linux /boot/vmlinuz root=%s rw "
-        "console=tty0 console=ttyS0,115200n8\n"
-        "    initrd /boot/initramfs.gz\n"
+        "    linux %s %s console=tty0 console=ttyS0,115200n8\n"
+        "    initrd %s\n"
         "}\n",
-        rootp, rootp);
+        kpath, cmdline, ipath, kpath, cmdline, ipath);
 
     char path[512];
     snprintf(path, sizeof(path), "%s/boot/grub", TARGET);
@@ -924,8 +1093,22 @@ static void cleanup(void)
     if (g_esp_mounted) {
         snprintf(p, sizeof(p), "%s/boot/efi", TARGET);
         umount2(p, MNT_DETACH);
+        g_esp_mounted = 0;
     }
-    if (g_root_mounted) umount2(TARGET, MNT_DETACH);
+    if (g_boot_mounted) {
+        snprintf(p, sizeof(p), "%s/boot", TARGET);
+        umount2(p, MNT_DETACH);
+        g_boot_mounted = 0;
+    }
+    if (g_root_mounted) {
+        umount2(TARGET, MNT_DETACH);
+        g_root_mounted = 0;
+    }
+    if (g_crypt_open) {
+        char *av[] = { "close", CRYPT_NAME, NULL };
+        (void)run_tool("cryptsetup", av);
+        g_crypt_open = 0;
+    }
 }
 
 static int ask_yes_no(const char *prompt, int def)
@@ -986,6 +1169,8 @@ static void usage(void)
            "  --password PASS        пароль пользователя\n"
            "  --gui | --no-gui       графическая или текстовая сессия\n"
            "  --efi | --bios         тип загрузки (по умолчанию автоопределение)\n"
+           "  --luks | --no-luks     шифрование корня LUKS2 (отдельный /boot)\n"
+           "  --luks-password PASS   пароль для LUKS\n"
            "  --yes, -y              не задавать вопросов\n"
            "  --force                разрешить установку на смонтированный диск\n",
            INSTALLER_VERSION);
@@ -1025,6 +1210,16 @@ int main(int argc, char **argv)
             efi_set = 1;
         } else if (!strcmp(argv[i], "--yes") || !strcmp(argv[i], "-y")) {
             g_yes = 1;
+        } else if (!strcmp(argv[i], "--luks")) {
+            g_luks = 1;
+            g_luks_set = 1;
+        } else if (!strcmp(argv[i], "--no-luks")) {
+            g_luks = 0;
+            g_luks_set = 1;
+        } else if (!strcmp(argv[i], "--luks-password") && i + 1 < argc) {
+            snprintf(g_luks_pass, sizeof(g_luks_pass), "%s", argv[++i]);
+            g_luks = 1;
+            g_luks_set = 1;
         } else if (!strcmp(argv[i], "--force")) {
             g_force = 1;
         } else {
@@ -1126,6 +1321,34 @@ int main(int argc, char **argv)
         want_gui = ask_yes_no("  Установить?", 1);
     }
 
+    if (!g_luks_set) {
+        printf("\n  Шифрование диска (LUKS2) защищает данные при потере "
+               "ноутбука.\n");
+        printf("  Ядро и initramfs останутся на отдельном незашифрованном "
+               "/boot.\n");
+        g_luks = ask_yes_no("  Включить шифрование LUKS?", 0);
+    }
+
+    if (g_luks && !g_luks_pass[0]) {
+        char confirm[256] = "";
+        do {
+            printf("  Пароль LUKS: ");
+            fflush(stdout);
+            read_password(g_luks_pass, sizeof(g_luks_pass));
+            printf("  Повторите пароль LUKS: ");
+            fflush(stdout);
+            read_password(confirm, sizeof(confirm));
+            if (!g_luks_pass[0]) {
+                printf("  Пароль LUKS не может быть пустым\n");
+                continue;
+            }
+            if (strcmp(g_luks_pass, confirm) != 0) {
+                printf("  Пароли не совпадают, попробуйте снова\n");
+                g_luks_pass[0] = 0;
+            }
+        } while (!g_luks_pass[0]);
+    }
+
     printf("\n  Установка Yaitso OS %s\n", INSTALLER_VERSION);
     printf("  ----------------------------------------\n");
     printf("  Диск:      %s (%.1f GiB)\n", disk,
@@ -1134,6 +1357,8 @@ int main(int argc, char **argv)
     printf("  Hostname:  %s\n", hostname);
     printf("  Пользователь: %s\n", user);
     printf("  Сессия:    %s\n", want_gui ? "графическая" : "текстовая");
+    printf("  Шифрование: %s\n",
+           g_luks ? "LUKS2 (aes-xts-plain64, /boot отдельно)" : "нет");
     printf("  ----------------------------------------\n");
     printf("  ВНИМАНИЕ: все данные на %s будут уничтожены!\n\n", disk);
 

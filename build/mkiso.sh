@@ -1,5 +1,5 @@
 #!/bin/bash
-# Сборка live-ISO Yaitso OS 0.3.31.
+# Сборка live-ISO Yaitso OS 0.3.4.
 #
 # Использование:  sudo build/mkiso.sh           (или KERNEL=... KVER=... build/mkiso.sh)
 #
@@ -15,7 +15,7 @@ set -eu
 DIST_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROOTFS="$DIST_DIR/build/rootfs"
 ISODIR="$DIST_DIR/build/iso"
-OUT="$DIST_DIR/yaitso-0.3.31.iso"
+OUT="$DIST_DIR/yaitso-0.3.4.iso"
 KERNEL="${KERNEL:-/boot/vmlinuz}"
 KVER="${KVER:-$(uname -r)}"
 MODDIR="/lib/modules/$KVER"
@@ -41,6 +41,21 @@ copy_libs_for() {
         mkdir -p "$dir"
         cp -L "$lib" "$dir/" 2>/dev/null || true
         copy_libs_for "$lib"
+    done
+}
+
+# То же, но в произвольный корень (например, initramfs установленной системы).
+copy_libs_to() {
+    local dest="$1" bin="$2" lib dir
+    [ -f "$bin" ] || return 0
+    ldd "$bin" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }' |
+    sort -u | while read -r lib; do
+        [ -f "$lib" ] || continue
+        [ -f "$dest$lib" ] && continue
+        dir="$dest$(dirname "$lib")"
+        mkdir -p "$dir"
+        cp -L "$lib" "$dir/" 2>/dev/null || true
+        copy_libs_to "$dest" "$lib"
     done
 }
 
@@ -182,6 +197,7 @@ else
 fi
 
 for tool in parted sfdisk wipefs mkfs.ext4 mkfs.vfat blkid lsblk \
+            cryptsetup \
             grub-install grub-probe grub-mkdevicemap grub-bios-setup \
             grub-mkimage grub-editenv grub-mkconfig; do
     copy_tool "$tool"
@@ -279,6 +295,13 @@ for m in ahci libahci nvme nvme-core virtio_blk virtio-pci sd_mod \
     copy_module "$m" || true
 done
 
+# LUKS: dm-crypt и криптографические алгоритмы. Нужны и live-системе (для
+# установки), и загрузочному initramfs, который открывает контейнер.
+for m in dm-crypt dm-mod xts aes aesni_intel sha256 sha512 cbc essiv \
+         authenc crypto_simd crc32c; do
+    copy_module "$m" || true
+done
+
 # Прежний набор модулей, оставлен для совместимости (копируется, если модульный).
 for m in drm_ttm_helper ttm drm_kms_helper drm fb syscopyarea sysfillrect sysimgblt fb_sys_fops; do
     copy_module "$m" || true
@@ -314,6 +337,22 @@ mkdir -p "$INSTALL_IR/bin" "$INSTALL_IR/sbin" "$INSTALL_IR/proc" \
 install -Dm755 "$BUSYBOX" "$INSTALL_IR/bin/busybox"
 cp -R "$DEST/." "$INSTALL_IR/lib/modules/$KVER/"
 
+# cryptsetup нужен initramfs, чтобы открыть LUKS-корень до switch_root.
+# Копируем его вместе с библиотеками и динамическим загрузчиком.
+if cs_path="$(command -v cryptsetup 2>/dev/null)"; then
+    cs_real="$(readlink -f "$cs_path")"
+    install -Dm755 "$cs_real" "$INSTALL_IR/sbin/cryptsetup"
+    copy_libs_to "$INSTALL_IR" "$cs_real"
+    # glibc подгружает libgcc_s через dlopen (pthread_exit/unwind), поэтому
+    # ldd его не показывает. Без него cryptsetup в initramfs падает с
+    # «libgcc_s.so.1 must be installed for pthread_exit to work».
+    for lib in /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib64/libgcc_s.so.1; do
+        [ -f "$lib" ] && install -Dm644 "$lib" "$INSTALL_IR$lib"
+    done
+else
+    warn "cryptsetup не найден на хосте: установка с LUKS будет недоступна"
+fi
+
 cat > "$INSTALL_IR/init" <<'INSTALL_INIT'
 #!/bin/busybox sh
 export PATH=/bin:/sbin
@@ -322,6 +361,7 @@ export PATH=/bin:/sbin
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mount -t tmpfs tmpfs /dev
+mkdir -p /dev/mapper /dev/pts /run
 
 # Драйверы накопителей; вкомпилированные в ядро modprobe просто пропустит.
 for m in ahci libahci nvme nvme-core virtio_blk virtio-pci sd_mod \
@@ -330,23 +370,55 @@ for m in ahci libahci nvme nvme-core virtio_blk virtio-pci sd_mod \
     modprobe "$m" 2>/dev/null
 done
 
+# dm-crypt и алгоритмы для LUKS. Без них cryptsetup не откроет контейнер.
+for m in dm-crypt dm-mod xts aes aesni-intel sha256 sha512 cbc essiv \
+         authenc crypto_simd crc32c; do
+    modprobe "$m" 2>/dev/null
+done
+
 root=""
+cryptroot=""
+bootroot=""
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         root=*) root="${arg#root=}" ;;
+        cryptroot=*) cryptroot="${arg#cryptroot=}" ;;
+        bootroot=*) bootroot="${arg#bootroot=}" ;;
     esac
 done
+
+wait_dev() {
+    i=0
+    while [ ! -b "$1" ] && [ "$i" -lt 40 ]; do
+        sleep 0.5
+        i=$((i + 1))
+    done
+    [ -b "$1" ]
+}
+
+if [ -n "$cryptroot" ]; then
+    if ! wait_dev "$cryptroot"; then
+        echo "initramfs: устройство $cryptroot не найдено"
+        exec /bin/sh
+    fi
+    if [ ! -x /sbin/cryptsetup ]; then
+        echo "initramfs: в образе нет cryptsetup"
+        exec /bin/sh
+    fi
+    echo "initramfs: открытие зашифрованного корня $cryptroot"
+    if ! /sbin/cryptsetup luksOpen "$cryptroot" yaitso-root </dev/console; then
+        echo "initramfs: не удалось открыть $cryptroot"
+        exec /bin/sh
+    fi
+    root=/dev/mapper/yaitso-root
+fi
+
 if [ -z "$root" ]; then
     echo "initramfs: параметр root= не задан"
     exec /bin/sh
 fi
 
-i=0
-while [ ! -b "$root" ] && [ "$i" -lt 20 ]; do
-    sleep 0.5
-    i=$((i + 1))
-done
-if [ ! -b "$root" ]; then
+if ! wait_dev "$root"; then
     echo "initramfs: устройство $root не найдено"
     exec /bin/sh
 fi
@@ -356,6 +428,18 @@ if ! mount -t ext4 -o rw "$root" /newroot; then
     if ! mount -o rw "$root" /newroot; then
         echo "initramfs: не удалось смонтировать $root"
         exec /bin/sh
+    fi
+fi
+
+# Отдельный незашифрованный /boot (нужен для LUKS): монтируем до
+# switch_root, чтобы установленная система сразу видела ядро.
+if [ -n "$bootroot" ]; then
+    if wait_dev "$bootroot"; then
+        mkdir -p /newroot/boot
+        mount -t ext4 -o rw "$bootroot" /newroot/boot 2>/dev/null || \
+            echo "initramfs: предупреждение: не удалось смонтировать $bootroot в /boot"
+    else
+        echo "initramfs: предупреждение: раздел /boot $bootroot не найден"
     fi
 fi
 
@@ -377,15 +461,15 @@ mkdir -p "$ISODIR/boot/grub" "$ISODIR/EFI/BOOT"
 cat > "$ISODIR/boot/grub/grub.cfg" <<MKGRUB
 set timeout=3
 set default=0
-menuentry "Yaitso OS 0.3.31 (live)" {
+menuentry "Yaitso OS 0.3.4 (live)" {
     linux /boot/vmlinuz quiet console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init video=efifb:off video=simpledrm:off
     initrd /boot/initramfs.gz
 }
-menuentry "Yaitso OS 0.3.31 (verbose)" {
+menuentry "Yaitso OS 0.3.4 (verbose)" {
     linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init video=efifb:off video=simpledrm:off
     initrd /boot/initramfs.gz
 }
-menuentry "Yaitso OS 0.3.31 (install)" {
+menuentry "Yaitso OS 0.3.4 (install)" {
     linux /boot/vmlinuz quiet console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init yaitso.install=1 video=efifb:off video=simpledrm:off
     initrd /boot/initramfs.gz
 }
@@ -402,8 +486,12 @@ if command -v grub-mkstandalone >/dev/null 2>&1; then
     # сработать, тогда установщик кладёт этот файл в EFI/BOOT. Он не содержит
     # live-конфиг, а ищет установленный /boot/grub/grub.cfg.
     cat > "$ISODIR/EFI/BOOT/install-grub.cfg" <<'EFIINSTALL'
-search --no-floppy --set=root --file /boot/grub/grub.cfg
-configfile /boot/grub/grub.cfg
+if search --no-floppy --set=root --file /grub/grub.cfg; then
+  configfile /grub/grub.cfg
+else
+  search --no-floppy --set=root --file /boot/grub/grub.cfg
+  configfile /boot/grub/grub.cfg
+fi
 EFIINSTALL
     if grub-mkstandalone -O x86_64-efi \
             -o "$DIST_DIR/build/BOOTX64-install.efi" \

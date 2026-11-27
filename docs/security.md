@@ -1,4 +1,4 @@
-# Yaitso OS 0.3.31 — безопасность
+# Yaitso OS 0.3.4 — безопасность
 
 ## HTTPS в yat
 
@@ -43,8 +43,18 @@
 - `useradd`/`userdel` пишут passwd/group/shadow атомарно и проверяют имена
 - `userdel` удаляет домашний каталог рекурсивно без вызова `system()`
 
+## Шифрование диска
+
+- Корневой раздел можно зашифровать LUKS2 (`--luks` в установщике)
+- Шифр `aes-xts-plain64`, ключ 512 бит, хеш SHA-256
+- `/boot` остаётся незашифрованным отдельным разделом: GRUB должен
+  прочитать ядро и initramfs до запуска cryptsetup
+- Пароль LUKS запрашивает initramfs при каждой загрузке
+- `cryptsetup` и модули dm-crypt входят в загрузочный initramfs
+- Без LUKS установка и разметка остаются прежними
+
 ## Известные ограничения
 
-- Нет LUKS, seccomp, AppArmor/SELinux
+- Нет seccomp, AppArmor/SELinux
 - Отпечатки сертификатов не пиннятся
 - passwd/group/shadow — только через файлы (без SSSD)

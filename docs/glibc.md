@@ -2,7 +2,7 @@
 
 ## Что это
 
-Yaitso OS 0.3.31 добавляет слой совместимости с glibc для сторонних
+Yaitso OS 0.3.4 добавляет слой совместимости с glibc для сторонних
 prebuilt-приложений (Firefox, Chromium, Steam, VSCode, Discord).
 Ядро системы (шелл, coreutils, GUI) продолжает работать на своём libc.
 

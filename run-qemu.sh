@@ -1,9 +1,9 @@
 #!/bin/sh
 # Запуск образа Yaitso OS в QEMU (Linux, нужен qemu-system-x86_64).
-# Использование: ./run-qemu.sh [путь/к/yaitso-0.3.31.iso] [bios|uefi]
+# Использование: ./run-qemu.sh [путь/к/yaitso-0.3.4.iso] [bios|uefi]
 # Графика: -vga std даёт bochs-совместимый дисплей, которого ждёт драйвер bochs.ko.
 set -eu
-ISO="${1:-yaitso-0.3.31.iso}"
+ISO="${1:-yaitso-0.3.4.iso}"
 MODE="${2:-bios}"
 ARGS="-m 2048 -smp 2 -cdrom $ISO -boot d -vga std -display gtk -no-reboot -name yaitso"
 

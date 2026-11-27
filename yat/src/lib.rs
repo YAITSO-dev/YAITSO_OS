@@ -4,7 +4,7 @@ pub mod http;
 pub mod meta;
 pub mod pkg;
 
-pub const VERSION: &str = "0.3.31";
+pub const VERSION: &str = "0.3.4";
 
 pub const REPO_DIR: &str = "/var/lib/yat/repo";
 pub const INSTALLED_DIR: &str = "/var/lib/yat/installed";

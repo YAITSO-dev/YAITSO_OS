@@ -352,8 +352,10 @@ void ycomp_pointer_motion_delta(struct ycomp_server *s, uint32_t time_msec,
     struct ycomp_view *v = ycomp_view_at(s, s->cursor->x, s->cursor->y,
                                          &surf, &sx, &sy);
     if (v) {
-        wlr_seat_pointer_notify_enter(s->seat, surf, sx, sy);
-        wlr_seat_pointer_notify_motion(s->seat, time_msec, sx, sy);
+        if (wlr_seat_pointer_surface_has_focus(s->seat, surf))
+            wlr_seat_pointer_notify_motion(s->seat, time_msec, sx, sy);
+        else
+            wlr_seat_pointer_notify_enter(s->seat, surf, sx, sy);
     } else {
         wlr_seat_pointer_clear_focus(s->seat);
     }
@@ -377,8 +379,10 @@ void ycomp_pointer_motion_abs(struct ycomp_server *s, uint32_t time_msec,
     struct ycomp_view *v = ycomp_view_at(s, s->cursor->x, s->cursor->y,
                                          &surf, &sx, &sy);
     if (v) {
-        wlr_seat_pointer_notify_enter(s->seat, surf, sx, sy);
-        wlr_seat_pointer_notify_motion(s->seat, time_msec, sx, sy);
+        if (wlr_seat_pointer_surface_has_focus(s->seat, surf))
+            wlr_seat_pointer_notify_motion(s->seat, time_msec, sx, sy);
+        else
+            wlr_seat_pointer_notify_enter(s->seat, surf, sx, sy);
     } else {
         wlr_seat_pointer_clear_focus(s->seat);
     }

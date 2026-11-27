@@ -1,5 +1,5 @@
 NAME=login
-VERSION=0.3.31
+VERSION=0.3.4
 ARCH=x86_64
 DESC="Login Yaitso OS"
 DEPENDS=base

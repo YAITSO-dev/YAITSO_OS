@@ -32,10 +32,19 @@ struct ycomp_evdev {
     int                         is_keyboard;
     int                         is_pointer;
     int                         is_absolute;
+    /* Накопительная панель (touchpad): ядро отдаёт абсолютные координаты
+     * пальца в собственных единицах, но привязывать их к экрану нельзя —
+     * палец занимает лишь часть площади и курсор прыгал бы. Такие дельты
+     * пересчитываются в пиксели от предыдущего положения. */
+    int                         is_touchpad;
+    int                         emulate_abs;
     int                         abs_x_min, abs_x_max;
     int                         abs_y_min, abs_y_max;
     int                         abs_x, abs_y;
     int                         have_abs_x, have_abs_y;
+    int                         last_abs_x, last_abs_y;
+    int                         have_last_abs;
+    int                         dropped;
     int                         pending_dx, pending_dy;
     int                         pending_wheel, pending_hwheel;
 
@@ -106,6 +115,22 @@ static void probe_device(struct ycomp_evdev *ed, const char *path)
     int has_rel = bit_set(evbits, EV_REL);
     int has_abs = bit_set(evbits, EV_ABS);
 
+    int touch = 0;
+    int direct = 0;
+    int has_rel_xy = 0;
+    int has_abs_xy = 0;
+
+    /* INPUT_PROP_DIRECT помечает устройства прямого ввода (тачскрин,
+     * графический планшет): для них абсолютные координаты действительно
+     * соответствуют точке на экране. INPUT_PROP_POINTER — обычный указатель,
+     * в том числе тачпад. */
+    uint8_t propbits[(INPUT_PROP_MAX + 8) / 8];
+    memset(propbits, 0, sizeof(propbits));
+    if (ioctl(ed->fd, EVIOCGPROP(sizeof(propbits)), propbits) >= 0) {
+        if (bit_set(propbits, INPUT_PROP_DIRECT))
+            direct = 1;
+    }
+
     if (has_key) {
         uint8_t keybits[(KEY_MAX + 8) / 8];
         memset(keybits, 0, sizeof(keybits));
@@ -117,8 +142,13 @@ static void probe_device(struct ycomp_evdev *ed, const char *path)
 
             if (bit_set(keybits, BTN_LEFT) || bit_set(keybits, BTN_TOUCH))
                 ed->is_pointer = 1;
-            if (bit_set(keybits, BTN_TOOL_FINGER))
+            if (bit_set(keybits, BTN_TOOL_FINGER) ||
+                bit_set(keybits, BTN_TOOL_DOUBLETAP))
                 ed->is_pointer = 1;
+            if (bit_set(keybits, BTN_TOOL_FINGER) ||
+                bit_set(keybits, BTN_TOOL_DOUBLETAP) ||
+                bit_set(keybits, BTN_TOUCH))
+                touch = 1;
         }
     }
 
@@ -126,8 +156,10 @@ static void probe_device(struct ycomp_evdev *ed, const char *path)
         uint8_t relbits[(REL_MAX + 8) / 8];
         memset(relbits, 0, sizeof(relbits));
         if (ioctl(ed->fd, EVIOCGBIT(EV_REL, sizeof(relbits)), relbits) >= 0) {
-            if (bit_set(relbits, REL_X) || bit_set(relbits, REL_Y))
+            if (bit_set(relbits, REL_X) || bit_set(relbits, REL_Y)) {
                 ed->is_pointer = 1;
+                has_rel_xy = 1;
+            }
         }
     }
 
@@ -137,24 +169,35 @@ static void probe_device(struct ycomp_evdev *ed, const char *path)
         if (ioctl(ed->fd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) >= 0) {
             if (bit_set(absbits, ABS_X) && bit_set(absbits, ABS_Y)) {
                 ed->is_pointer = 1;
-                ed->is_absolute = 1;
 
                 struct input_absinfo info;
                 if (ioctl(ed->fd, EVIOCGABS(ABS_X), &info) == 0) {
                     ed->abs_x_min = info.minimum;
                     ed->abs_x_max = info.maximum;
                 }
-                if (ed->abs_x_max <= ed->abs_x_min)
-                    ed->is_absolute = 0;
                 if (ioctl(ed->fd, EVIOCGABS(ABS_Y), &info) == 0) {
                     ed->abs_y_min = info.minimum;
                     ed->abs_y_max = info.maximum;
                 }
-                if (ed->abs_y_max <= ed->abs_y_min)
-                    ed->is_absolute = 0;
+                if (ed->abs_x_max > ed->abs_x_min &&
+                    ed->abs_y_max > ed->abs_y_min)
+                    has_abs_xy = 1;
             }
         }
     }
+
+    /* Тачпад (не тачскрин) с абсолютными координатами: превращаем движение
+     * пальца в относительное. Если ядро уже отдаёт REL_X/REL_Y, предпочитаем
+     * их и абсолютные события игнорируем. */
+    if (touch && !direct && has_abs_xy) {
+        ed->is_touchpad = 1;
+        if (!has_rel_xy)
+            ed->emulate_abs = 1;
+    }
+    /* Тачпады никогда не двигают курсор абсолютно: либо относительные
+     * события, либо пересчёт ABS→дельта. Прямой ввод (тачскрин) и
+     * absolute-узлы мыши остаются абсолютными. */
+    ed->is_absolute = has_abs_xy && !ed->is_touchpad;
 
     (void)path;
 }
@@ -188,6 +231,33 @@ static void flush_frame(struct ycomp_evdev *ed)
 
         ycomp_pointer_motion_abs(ed->server, now_msec(), x, y);
         ed->have_abs_x = ed->have_abs_y = 0;
+    } else if (ed->emulate_abs && (ed->have_abs_x || ed->have_abs_y)) {
+        if (!ed->have_abs_x) ed->abs_x = ed->last_abs_x;
+        if (!ed->have_abs_y) ed->abs_y = ed->last_abs_y;
+
+        /* Первое касание только запоминает точку: иначе курсор прыгнул бы
+         * из старой позиции в место первого касания. */
+        if (!ed->have_last_abs) {
+            ed->last_abs_x = ed->abs_x;
+            ed->last_abs_y = ed->abs_y;
+            ed->have_last_abs = 1;
+        } else {
+            struct wlr_box screen = {0};
+            wlr_output_layout_get_box(ed->server->output_layout, NULL, &screen);
+            double sw = screen.width > 0 ? screen.width : 1024;
+            double sh = screen.height > 0 ? screen.height : 768;
+
+            double dx = (double)(ed->abs_x - ed->last_abs_x) * sw /
+                        (double)(ed->abs_x_max - ed->abs_x_min);
+            double dy = (double)(ed->abs_y - ed->last_abs_y) * sh /
+                        (double)(ed->abs_y_max - ed->abs_y_min);
+            ed->last_abs_x = ed->abs_x;
+            ed->last_abs_y = ed->abs_y;
+
+            if (dx != 0.0 || dy != 0.0)
+                ycomp_pointer_motion_delta(ed->server, now_msec(), dx, dy);
+        }
+        ed->have_abs_x = ed->have_abs_y = 0;
     } else if (ed->pending_dx || ed->pending_dy) {
         ycomp_pointer_motion_delta(ed->server, now_msec(),
                                    ed->pending_dx, ed->pending_dy);
@@ -216,6 +286,10 @@ static void flush_frame(struct ycomp_evdev *ed)
 
 static void handle_event(struct ycomp_evdev *ed, struct input_event *ev)
 {
+    /* После переполнения очереди ядра (SYN_DROPPED) значения до следующего
+     * SYN_REPORT недостоверны — пропускаем их, чтобы курсор не дёргался. */
+    if (ed->dropped && ev->type != EV_SYN) return;
+
     switch (ev->type) {
     case EV_KEY:
         if (ed->is_keyboard && ev->code < BTN_MISC) {
@@ -232,6 +306,9 @@ static void handle_event(struct ycomp_evdev *ed, struct input_event *ev)
             };
             wlr_keyboard_notify_key(&ed->keyboard, &kev);
         } else if (ed->is_pointer && ev->code >= BTN_MISC) {
+            if (ev->code == BTN_TOUCH || ev->code == BTN_TOOL_FINGER)
+                if (ev->value == 1)
+                    ed->have_last_abs = 0;
             if (ev->value != 0 && ev->value != 1) break;
             if (ed->num_buttons < EVDEV_PENDING_BTN) {
                 ed->buttons[ed->num_buttons].code = ev->code;
@@ -254,7 +331,7 @@ static void handle_event(struct ycomp_evdev *ed, struct input_event *ev)
         break;
 
     case EV_ABS:
-        if (!ed->is_pointer || !ed->is_absolute) break;
+        if (!ed->is_pointer || (!ed->is_absolute && !ed->emulate_abs)) break;
         switch (ev->code) {
         case ABS_X:
             ed->abs_x = ev->value;
@@ -268,7 +345,16 @@ static void handle_event(struct ycomp_evdev *ed, struct input_event *ev)
         break;
 
     case EV_SYN:
-        if (ev->code == SYN_REPORT) flush_frame(ed);
+        if (ev->code == SYN_DROPPED) {
+            ed->dropped = 1;
+            ed->pending_dx = ed->pending_dy = 0;
+            ed->pending_wheel = ed->pending_hwheel = 0;
+            ed->have_abs_x = ed->have_abs_y = 0;
+            ed->have_last_abs = 0;
+        } else if (ev->code == SYN_REPORT) {
+            ed->dropped = 0;
+            flush_frame(ed);
+        }
         break;
 
     default:
@@ -308,12 +394,37 @@ static void update_caps(struct ycomp_server *s)
     wlr_seat_set_capabilities(s->seat, caps);
 }
 
+/* EVIOCGPHYS возвращает физический путь устройства. Одна физическая мышь
+ * или тачпад часто регистрирует несколько узлов event* — например,
+ * QEMU/VMware vmmouse отдаёт отдельные absolute- и relative-узлы с общим
+ * phys. Обрабатывать оба нельзя: события absolute перепрыгивают позицию,
+ * relative продолжают движение, и курсор дёргается. Оставляем один узел,
+ * отбрасывая суффикс /inputN. */
+static void device_phys(int fd, char *out, size_t n)
+{
+    out[0] = 0;
+    if (ioctl(fd, EVIOCGPHYS(n), out) < 0) {
+        out[0] = 0;
+        return;
+    }
+    out[n - 1] = 0;
+    char *slash = strrchr(out, '/');
+    if (slash && !strncmp(slash + 1, "input", 5)) {
+        char *p = slash + 6;
+        while (*p >= '0' && *p <= '9') p++;
+        if (*p == 0 && p != slash + 6)
+            *slash = 0;
+    }
+}
+
 void ycomp_evdev_init(struct ycomp_server *s)
 {
     /* Повторные сканирования не должны открывать одно и то же устройство
      * дважды: помним st_rdev уже открытых узлов. */
     static dev_t opened[EVDEV_MAX_PATH];
     static int num_opened = 0;
+    static char opened_phys[EVDEV_MAX_PATH][128];
+    static int num_opened_phys = 0;
 
     int found = 0;
 
@@ -345,6 +456,20 @@ void ycomp_evdev_init(struct ycomp_server *s)
             continue;
         }
 
+        char phys[128] = "";
+        device_phys(fd, phys, sizeof(phys));
+
+        if (ed->is_pointer && phys[0]) {
+            int duplicate = 0;
+            for (int j = 0; j < num_opened_phys; j++)
+                if (!strcmp(opened_phys[j], phys)) { duplicate = 1; break; }
+            if (duplicate) {
+                close(fd);
+                free(ed);
+                continue;
+            }
+        }
+
         char name[128] = "evdev";
         if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0)
             snprintf(name, sizeof(name), "%s", path);
@@ -365,11 +490,17 @@ void ycomp_evdev_init(struct ycomp_server *s)
 
         if (num_opened < EVDEV_MAX_PATH)
             opened[num_opened++] = st.st_rdev;
+        if (ed->is_pointer && phys[0] && num_opened_phys < EVDEV_MAX_PATH)
+            snprintf(opened_phys[num_opened_phys++], sizeof(opened_phys[0]),
+                     "%s", phys);
 
-        fprintf(stderr, "ycomp: evdev %s \"%s\" (%s%s)\n", path, name,
-                ed->is_keyboard ? "keyboard" : "",
+        fprintf(stderr, "ycomp: evdev %s \"%s\"%s%s\n", path, name,
+                ed->is_keyboard ? " keyboard" : "",
                 ed->is_pointer ? (ed->is_absolute ? " absolute pointer"
-                                                 : " pointer") : "");
+                                 : ed->is_touchpad ? " touchpad"
+                                 : " pointer") : "");
+        if (phys[0])
+            fprintf(stderr, "ycomp: evdev %s phys: %s\n", path, phys);
         found++;
     }
 

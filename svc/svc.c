@@ -382,7 +382,7 @@ static int svc_daemon(void)
 static void usage(void)
 {
     fprintf(stderr,
-        "svc 0.3.31 — сервис-менеджер Yaitso OS\n"
+        "svc 0.3.4 — сервис-менеджер Yaitso OS\n"
         "  svc list             — список сервисов\n"
         "  svc start <name>     — запустить\n"
         "  svc stop <name>      — остановить\n"

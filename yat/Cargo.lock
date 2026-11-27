@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "yat"
-version = "0.3.31"
+version = "0.3.4"
 dependencies = [
  "ed25519-dalek",
  "flate2",
